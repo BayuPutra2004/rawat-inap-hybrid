@@ -13,7 +13,10 @@ while True:
 
     cursor = db.cursor(pymysql.cursors.DictCursor)
 
-    query = "SELECT * FROM pasien WHERE status_sync='pending'"
+    query = """
+    SELECT * FROM pasien
+    WHERE status_sync='pending'
+    """
 
     cursor.execute(query)
 
@@ -21,28 +24,45 @@ while True:
 
     print("CEK DATA PENDING...")
 
-    for pasien in hasil:
+    if hasil:
+
+        # UBAH SEMUA DATE/DATETIME KE STRING
+        for pasien in hasil:
+
+            for key, value in pasien.items():
+
+                if value is not None:
+                    pasien[key] = str(value)
 
         try:
 
             response = requests.post(
-                "http://IP-VPS:8001/api/sync/pasien",
-                json=pasien
+                "http://103.87.67.113:8001/api/sync/pasien",
+                json=hasil,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                }
             )
+
+            print("STATUS:", response.status_code)
+            print("RESPON:", response.text)
 
             if response.status_code == 200:
 
-                update_query = '''
+                ids = [str(item['id']) for item in hasil]
+
+                update_query = f"""
                 UPDATE pasien
                 SET status_sync='synced'
-                WHERE id=%s
-                '''
+                WHERE id IN ({','.join(ids)})
+                """
 
-                cursor.execute(update_query, (pasien['id'],))
+                cursor.execute(update_query)
 
                 db.commit()
 
-                print("BERHASIL SYNC:", pasien['id'])
+                print("SYNC BERHASIL")
 
         except Exception as e:
 
