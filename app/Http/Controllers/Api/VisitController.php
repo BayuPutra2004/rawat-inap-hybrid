@@ -58,9 +58,17 @@ class VisitController extends Controller
                 'tindakan' => 'required',
             ]);
 
+            $pasien = \App\Models\Pasien::find($request->pasien_id);
+            $dokter = \App\Models\User::find($request->dokter_id);
             $visit = Visit::create([
                 'pasien_id' => $request->pasien_id,
                 'dokter_id' => $request->dokter_id,
+
+                // UUID RELATION
+                'pasien_uuid' => $pasien?->uuid,
+                'dokter_uuid' => $dokter?->uuid,
+
+                // DATA VISIT
                 'keluhan' => $request->keluhan,
                 'diagnosa' => $request->diagnosa,
                 'tindakan' => $request->tindakan,

@@ -12,6 +12,8 @@ class Visit extends Model
     protected $fillable = [
         'pasien_id',
         'dokter_id',
+        'pasien_uuid',
+        'dokter_uuid',
         'keluhan',
         'diagnosa',
         'tindakan',

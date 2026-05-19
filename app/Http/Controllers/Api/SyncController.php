@@ -43,26 +43,57 @@ class SyncController extends Controller
     public function syncVisit(Request $request)
     {
         foreach ($request->all() as $item) {
-            $existing = Visit::where('uuid', $item['uuid'])->first();
 
+            // CARI PASIEN BERDASARKAN UUID
+            $pasien = Pasien::where('uuid',$item['pasien_uuid'])->first();
+
+            // CARI DOKTER BERDASARKAN UUID
+            $dokter = \App\Models\User::where('uuid',$item['dokter_uuid'])->first();
+
+            // CEK DATA VISIT SUDAH ADA ATAU BELUM
+            $existing = Visit::where('uuid',$item['uuid'])->first();
+
+            // DATA BARU
             if (!$existing) {
-                Visit::create(array_merge($item, [
+                Visit::create([
+                    'pasien_id' => $pasien?->id,
+                    'dokter_id' => $dokter?->id,
+                    'pasien_uuid' => $item['pasien_uuid'],
+                    'dokter_uuid' => $item['dokter_uuid'],
+                    'keluhan' => $item['keluhan'],
+                    'diagnosa' => $item['diagnosa'],
+                    'tindakan' => $item['tindakan'],
+                    'uuid' => $item['uuid'],
                     'status_sync' => 'synced',
-                    'synced_at'   => now(),
-                ]));
+                    'synced_at' => now(),
+                    'source_server' => 'lokal',
+                    'created_at' => $item['created_at'],
+                    'updated_at' => $item['updated_at'],
+                ]);
+
             } else {
+
+                // CONFLICT HANDLING
                 if ($item['updated_at'] > $existing->updated_at) {
-                    $existing->update(array_merge($item, [
+                    $existing->update([
+                        'pasien_id' => $pasien?->id,
+                        'dokter_id' => $dokter?->id,
+                        'keluhan' => $item['keluhan'],
+                        'diagnosa' => $item['diagnosa'],
+                        'tindakan' => $item['tindakan'],
                         'status_sync' => 'synced',
-                        'synced_at'   => now(),
-                    ]));
+                        'synced_at' => now(),
+                    ]);
                 } else {
-                    $existing->update(['status_sync' => 'conflict']);
+                    $existing->update([
+                        'status_sync' => 'conflict'
+                    ]);
                 }
             }
         }
-
-        return response()->json(['success' => true]);
+        return response()->json([
+            'success' => true
+        ]);
     }
 
     // ================== KIRIM DATA KE SERVER LAIN ==================
