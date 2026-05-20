@@ -66,9 +66,10 @@ class SyncController extends Controller
                     'uuid' => $item['uuid'],
                     'status_sync' => 'synced',
                     'synced_at' => now(),
-                    'source_server' => 'lokal',
+                    'source_server' => 'source_server',
                     'created_at' => $item['created_at'],
                     'updated_at' => $item['updated_at'],
+                    'action_type' => $item['action_type'],
                 ]);
 
             } else {
@@ -82,6 +83,7 @@ class SyncController extends Controller
                         'diagnosa' => $item['diagnosa'],
                         'tindakan' => $item['tindakan'],
                         'status_sync' => 'synced',
+                        'action_type' => $item['action_type'],
                         'synced_at' => now(),
                     ]);
                 } else {
@@ -96,8 +98,50 @@ class SyncController extends Controller
         ]);
     }
 
-    // ================== KIRIM DATA KE SERVER LAIN ==================
+    // sync user
+    public function syncUsers(Request $request)
+    {
+        try {
+            // AMBIL DATA USER
+            $data = $request->all();
 
+            foreach ($data as $item) {                
+                // UPDATE ATAU CREATE USER
+                \App\Models\User::updateOrCreate(
+                    [
+                        'uuid' => $item['uuid']
+                    ],
+                    [
+                        'name' => $item['name'],
+                        'email' => $item['email'],
+                        'password' => $item['password'],
+                        'role' => $item['role'],
+
+                        // HYBRID SYNCHRONIZATION
+                        'status_sync' => 'synced',
+                        'synced_at' => now(),
+                        'source_server' =>
+                            $item['source_server'],
+                        'action_type' =>
+                            $item['action_type']
+                    ]
+                );
+            }
+
+            // RESPONSE SUCCESS
+            return response()->json([
+                'success' => true,
+                'message' => 'Sync users success'
+            ], 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // ================== KIRIM DATA KE SERVER LAIN ==================
     public function kirimPasien()
     {
         $startedAt = Carbon::now();
@@ -126,8 +170,8 @@ class SyncController extends Controller
                     ]);
                 }
 
-                $this->catatLog('pasien', 'lokal_ke_publik', 'berhasil',
-                    'Berhasil sync ' . $data->count() . ' pasien',
+                $this->catatLog('pasien', 'lokal_ke_publik', 'success',
+                    'success sync ' . $data->count() . ' pasien',
                     $startedAt, $finishedAt, $durasiMs
                 );
 
@@ -139,19 +183,19 @@ class SyncController extends Controller
                 ]);
             }
 
-            throw new \Exception('Response gagal: ' . $res->status());
+            throw new \Exception('Response failed: ' . $res->status());
 
         } catch (\Exception $e) {
             $finishedAt = Carbon::now();
             $durasiMs   = $startedAt->diffInMilliseconds($finishedAt);
 
-            $this->catatLog('pasien', 'lokal_ke_publik', 'gagal',
+            $this->catatLog('pasien', 'lokal_ke_publik', 'failed',
                 $e->getMessage(), $startedAt, $finishedAt, $durasiMs
             );
 
             return response()->json([
                 'success' => false,
-                'pesan'   => 'Sync gagal: ' . $e->getMessage(),
+                'pesan'   => 'Sync failed: ' . $e->getMessage(),
             ], 500);
         }
     }
@@ -184,8 +228,8 @@ class SyncController extends Controller
                     ]);
                 }
 
-                $this->catatLog('visit', 'lokal_ke_publik', 'berhasil',
-                    'Berhasil sync ' . $data->count() . ' visit',
+                $this->catatLog('visit', 'lokal_ke_publik', 'success',
+                    'success sync ' . $data->count() . ' visit',
                     $startedAt, $finishedAt, $durasiMs
                 );
 
@@ -197,19 +241,19 @@ class SyncController extends Controller
                 ]);
             }
 
-            throw new \Exception('Response gagal: ' . $res->status());
+            throw new \Exception('Response failed: ' . $res->status());
 
         } catch (\Exception $e) {
             $finishedAt = Carbon::now();
             $durasiMs   = $startedAt->diffInMilliseconds($finishedAt);
 
-            $this->catatLog('visit', 'lokal_ke_publik', 'gagal',
+            $this->catatLog('visit', 'lokal_ke_publik', 'failed',
                 $e->getMessage(), $startedAt, $finishedAt, $durasiMs
             );
 
             return response()->json([
                 'success' => false,
-                'pesan'   => 'Sync gagal: ' . $e->getMessage(),
+                'pesan'   => 'Sync failed: ' . $e->getMessage(),
             ], 500);
         }
     }
@@ -219,32 +263,64 @@ class SyncController extends Controller
     public function avgSyncTime()
     {
         $avg = DB::table('sync_log')
-            ->where('status', 'berhasil')
-            ->whereNotNull('duration_ms')
-            ->avg('duration_ms');
+            ->where('sync_status', 'success')
+            ->whereNotNull('sync_duration_ms')
+            ->avg('sync_duration_ms');
 
         return response()->json([
             'avg_ms'    => round($avg, 2),
             'avg_detik' => round($avg / 1000, 3),
-            'pesan'     => 'Rata-rata waktu sinkronisasi: ' . round($avg, 2) . ' ms',
+            'pesan'     => 'Rata-rata waktu sinkronisasi: ' 
+                . round($avg, 2) 
+                . ' ms',
         ]);
     }
 
     // ================== HELPER LOG ==================
 
-    private function catatLog($tabel, $arah, $status, $pesan, $startedAt, $finishedAt, $durasiMs)
+    private function catatLog(
+        $tableName,
+        $targetServer,
+        $syncStatus,
+        $message,
+        $startedAt,
+        $finishedAt,
+        $durationMs
+    )
     {
         DB::table('sync_log')->insert([
-            'tabel'         => $tabel,
-            'uuid_data'     => '-',
-            'arah'          => $arah,
-            'status'        => $status,
-            'pesan'         => $pesan,
-            'source_server' => env('SERVER_ROLE', 'lokal'),
-            'started_at'    => $startedAt,
-            'finished_at'   => $finishedAt,
-            'duration_ms'   => $durasiMs,
-            'created_at'    => Carbon::now(),
+
+            // NAMA TABEL YANG DISYNC
+            'table_name' => $tableName,
+
+            // UUID DATA
+            'data_uuid' => '-',
+
+            // SERVER ASAL
+            // 
+            'source_server' =>
+                env('SERVER_ROLE', 'lokal'),
+
+            // SERVER TUJUAN
+            'target_server' =>
+                $targetServer,
+
+            // STATUS SYNC
+            // success / failed
+            'sync_status' =>
+                $syncStatus,
+
+            // WAKTU SYNC (MS)
+            'sync_duration_ms' =>
+                $durationMs,
+
+            // PESAN LOG
+            'message' =>
+                $message,
+
+            // TIMESTAMP
+            'created_at' => Carbon::now(),
+            'updated_at' => Carbon::now()
         ]);
     }
 }
