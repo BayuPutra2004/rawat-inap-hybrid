@@ -107,25 +107,48 @@ class SyncController extends Controller
 
             foreach ($data as $item) {                
                 // UPDATE ATAU CREATE USER
-                \App\Models\User::updateOrCreate(
-                    [
-                        'uuid' => $item['uuid']
-                    ],
-                    [
+                $existing = \App\Models\User::where(
+                    'uuid',
+                    $item['uuid']
+                )->orWhere(
+                    'email',
+                    $item['email']
+                )->first();
+
+                if ($existing) {
+
+                    // UPDATE USER
+                    $existing->update([
+
+                        'uuid' => $item['uuid'],
                         'name' => $item['name'],
                         'email' => $item['email'],
                         'password' => $item['password'],
                         'role' => $item['role'],
-
-                        // HYBRID SYNCHRONIZATION
                         'status_sync' => 'synced',
                         'synced_at' => now(),
                         'source_server' =>
                             $item['source_server'],
                         'action_type' =>
                             $item['action_type']
-                    ]
-                );
+                    ]);
+
+                } else {
+                    // CREATE USER BARU
+                    \App\Models\User::create([
+                        'uuid' => $item['uuid'],
+                        'name' => $item['name'],
+                        'email' => $item['email'],
+                        'password' => $item['password'],
+                        'role' => $item['role'],
+                        'status_sync' => 'synced',
+                        'synced_at' => now(),
+                        'source_server' =>
+                            $item['source_server'],
+                        'action_type' =>
+                            $item['action_type']
+                    ]);
+                }
             }
 
             // RESPONSE SUCCESS
