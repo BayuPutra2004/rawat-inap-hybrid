@@ -17,27 +17,78 @@ class SyncController extends Controller
     public function syncPasien(Request $request)
     {
         foreach ($request->all() as $item) {
-            $existing = Pasien::where('uuid', $item['uuid'])->first();
 
+            // CARI DOKTER BERDASARKAN UUID
+            $dokter = \App\Models\User::where('uuid', $item['dokter_uuid'])->first();
+
+            // CEK DATA PASIEN
+            $existing = Pasien::where('uuid',$item['uuid'])->first();
+
+            // DATA BARU
             if (!$existing) {
-                Pasien::create(array_merge($item, [
+                Pasien::create([
+                    'uuid' => $item['uuid'],
+                    'no_rm' => $item['no_rm'],
+                    'nama' => $item['nama'],
+                    'jenis_kelamin' =>$item['jenis_kelamin'],
+                    'tanggal_lahir' =>$item['tanggal_lahir'],
+                    // DOKTER VPS
+                    'dokter_id' =>$dokter ? $dokter->id : null,
+                    'dokter_uuid' => $item['dokter_uuid'],
+                    'status' => $item['status'],
+                    'tanggal_keluar' => $item['tanggal_keluar'],
+                    'catatan_keluar' => $item['catatan_keluar'],
+                    'is_active' => $item['is_active'],
+
+                    // HYBRID SYNC
                     'status_sync' => 'synced',
-                    'synced_at'   => now(),
-                ]));
+                    'synced_at' => now(),
+                    'source_server' => $item['source_server'],
+                    'action_type' => $item['action_type'],
+                    'created_at' =>  $item['created_at'],
+                    'updated_at' => $item['updated_at']
+                ]);
+
             } else {
-                if ($item['updated_at'] > $existing->updated_at) {
-                    $existing->update(array_merge($item, [
+                // CONFLICT HANDLING
+                if (
+                    $item['updated_at']
+                    > $existing->updated_at
+                ) {
+                    $existing->update([
+                        'no_rm' => $item['no_rm'],
+                        'nama' => $item['nama'],
+                        'jenis_kelamin' => $item['jenis_kelamin'],
+                        'tanggal_lahir' => $item['tanggal_lahir'],
+
+                        // DOKTER VPS
+                        'dokter_id' =>  $dokter ? $dokter->id : null,
+                        'dokter_uuid' => $item['dokter_uuid'],
+                        'status' =>  $item['status'],
+                        'tanggal_keluar' =>  $item['tanggal_keluar'],
+                        'catatan_keluar' => $item['catatan_keluar'],
+                        'is_active' =>  $item['is_active'],
+
+                        // HYBRID SYNC
+                        // ====================================
                         'status_sync' => 'synced',
-                        'synced_at'   => now(),
-                    ]));
+                        'synced_at' => now(),
+                        'source_server' => $item['source_server'],
+                        'action_type' =>  $item['action_type']
+                    ]);
+
                 } else {
-                    // Data konflik — updated_at sama atau lebih lama
-                    $existing->update(['status_sync' => 'conflict']);
+                    // DATA CONFLICT
+                    $existing->update([
+                        'status_sync' => 'conflict'
+                    ]);
                 }
             }
         }
 
-        return response()->json(['success' => true]);
+        return response()->json([
+            'success' => true
+        ]);
     }
 
     public function syncVisit(Request $request)

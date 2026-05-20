@@ -29,12 +29,19 @@ class PasienController extends Controller
             'tanggal_lahir' => 'required',
         ]);
 
+        // AMBIL DATA DOKTER
+        $dokter = \App\Models\User::find($request->dokter_id);
+
+        // SIMPAN PASIEN
         $pasien = Pasien::create([
             'no_rm' => $request->no_rm,
             'nama' => $request->nama,
             'jenis_kelamin' => $request->jenis_kelamin,
             'tanggal_lahir' => $request->tanggal_lahir,
             'dokter_id' => $request->dokter_id,
+
+            // UUID DOKTER
+            'dokter_uuid' => $dokter ? $dokter->uuid : null,
             'is_active' => 1,
             'status' => 'dirawat',
             'tanggal_keluar' => null,
@@ -47,11 +54,7 @@ class PasienController extends Controller
             'synced_at' => null
         ]);
 
-        // AUTO SYNC KE SERVER LAIN
-        // app(\App\Http\Controllers\Api\SyncController::class)
-        //     ->kirimPasien();
-        
-            return response()->json([
+        return response()->json([
             'success' => true,
             'data' => $pasien
         ]);
@@ -73,10 +76,11 @@ class PasienController extends Controller
             $pasien->nama = $request->nama ?? $pasien->nama;
             $pasien->jenis_kelamin = $request->jenis_kelamin ?? $pasien->jenis_kelamin;
             $pasien->tanggal_lahir = $request->tanggal_lahir ?? $pasien->tanggal_lahir;
-            $pasien->dokter_id =
-                $request->has('dokter_id')
-                ? $request->dokter_id
-                : $pasien->dokter_id;
+            // AMBIL UUID DOKTER
+            $dokter = \App\Models\User::find($pasien->dokter_id);
+
+            $pasien->dokter_uuid =
+                $dokter ? $dokter->uuid : null;
             $pasien->status = $request->status ?? $pasien->status;
             $pasien->catatan_keluar = $request->catatan_keluar ?? $pasien->catatan_keluar;
 
