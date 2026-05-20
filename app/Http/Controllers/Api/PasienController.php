@@ -53,41 +53,60 @@ class PasienController extends Controller
     // ================= UPDATE PASIEN =================
     public function update(Request $request, $id)
     {
-        $pasien = Pasien::find($id);
+        try {
+            $pasien = Pasien::find($id);
+            if (!$pasien) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Pasien tidak ditemukan'
+                ], 404);
+            }
 
-        if (!$pasien) {
+            // UPDATE DATA PASIEN
+            $pasien->nama = $request->nama ?? $pasien->nama;
+            $pasien->jenis_kelamin = $request->jenis_kelamin ?? $pasien->jenis_kelamin;
+            $pasien->tanggal_lahir = $request->tanggal_lahir ?? $pasien->tanggal_lahir;
+            $pasien->dokter_id =
+                $request->has('dokter_id')
+                ? $request->dokter_id
+                : $pasien->dokter_id;
+            $pasien->status = $request->status ?? $pasien->status;
+            $pasien->catatan_keluar = $request->catatan_keluar ?? $pasien->catatan_keluar;
+
+            // STATUS PASIEN
+            if (
+                $pasien->status == 'pulang' ||
+                $pasien->status == 'meninggal'
+            ) {
+                $pasien->tanggal_keluar =
+                    now()->toDateString();
+            } else {
+                $pasien->tanggal_keluar = null;
+            }
+
+            // TANDAI PERLU SYNC ULANG
+            $pasien->status_sync = 'pending';
+            $pasien->source_server = 'lokal';
+            $pasien->synced_at = null;
+
+            // simpan perubahan
+            $pasien->save();
+
+            // reload relasi dokter
+            $pasien->load('dokter');
+
+            // RESPONSE SUCCESS
+            return response()->json([
+                'success' => true,
+                'message' => 'Data pasien berhasil diupdate',
+                'data' => $pasien
+            ], 200);
+        } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Pasien tidak ditemukan'
-            ], 404);
+                'message' => $e->getMessage()
+            ], 500);
         }
-
-        // ✅ Pakai nilai lama kalau field tidak dikirim
-        $pasien->nama = $request->nama ?? $pasien->nama;
-        $pasien->jenis_kelamin = $request->jenis_kelamin ?? $pasien->jenis_kelamin;
-        $pasien->tanggal_lahir = $request->tanggal_lahir ?? $pasien->tanggal_lahir;
-        $pasien->dokter_id = $request->has('dokter_id') ? $request->dokter_id : $pasien->dokter_id;
-        $pasien->status = $request->status ?? $pasien->status;
-        $pasien->catatan_keluar = $request->catatan_keluar ?? $pasien->catatan_keluar;
-
-        if ($pasien->status == 'pulang' || $pasien->status == 'meninggal') {
-            $pasien->tanggal_keluar = now()->toDateString();
-        } else {
-            $pasien->tanggal_keluar = null;
-        }
-
-        // TANDAI PERLU SYNC ULANG
-        $pasien->status_sync = 'pending';
-        $pasien->synced_at = null;
-        $pasien->save();
-        app(\App\Http\Controllers\Api\SyncController::class)
-        ->kirimPasien();
-        
-        return response()->json([
-            'success' => true,
-            'message' => 'Data pasien berhasil diupdate',
-            'data' => $pasien->load('dokter')
-        ]);
     }
 
     // ================= DELETE PASIEN =================
