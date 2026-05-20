@@ -39,10 +39,17 @@ class PasienController extends Controller
             'status' => 'dirawat',
             'tanggal_keluar' => null,
             'catatan_keluar' => null,
+
+            // HYBRID SYNC
+            'status_sync' => 'pending',
+            'source_server' => 'lokal',
+            'action_type' => 'create',
+            'synced_at' => null
         ]);
+
         // AUTO SYNC KE SERVER LAIN
-        app(\App\Http\Controllers\Api\SyncController::class)
-            ->kirimPasien();
+        // app(\App\Http\Controllers\Api\SyncController::class)
+        //     ->kirimPasien();
         
             return response()->json([
             'success' => true,
@@ -89,6 +96,9 @@ class PasienController extends Controller
             $pasien->source_server = 'lokal';
             $pasien->synced_at = null;
 
+            // for sync log
+            $pasien->action_type = 'update';
+            
             // simpan perubahan
             $pasien->save();
 

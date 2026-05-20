@@ -26,6 +26,7 @@ BASE_URL = "http://103.87.67.113:8001/api"
 def save_sync_log(
     cursor,
     table_name,
+    action_type,
     data_uuid,
     source_server,
     target_server,
@@ -36,6 +37,7 @@ def save_sync_log(
     query = """
     INSERT INTO sync_log (
         table_name,
+        action_type,
         data_uuid,
         source_server,
         target_server,
@@ -46,18 +48,21 @@ def save_sync_log(
         updated_at
     )
     VALUES (
-        %s,%s,%s,%s,%s,%s,%s,NOW(),NOW()
+        %s,%s,%s,%s,%s,%s,%s,%s,
+        NOW(),NOW()
     )
     """
-
+    
     cursor.execute(query, (
         table_name,
+        action_type,
         data_uuid,
         source_server,
         target_server,
         sync_status,
         duration_ms,
         message
+
     ))
 
 # FUNCTION GENERIC SYNC DATA
@@ -181,6 +186,7 @@ def sync_data(table_name, endpoint):
                 save_sync_log(
                     cursor,
                     table_name,
+                    item["action_type"],
                     item["uuid"],
                     "lokal",
                     "vps",
@@ -201,6 +207,7 @@ def sync_data(table_name, endpoint):
                 save_sync_log(
                     cursor,
                     table_name,
+                    item["action_type"],
                     item["uuid"],
                     "lokal",
                     "vps",
@@ -233,6 +240,7 @@ def sync_data(table_name, endpoint):
             save_sync_log(
                 cursor,
                 table_name,
+                item["action_type"],
                 item["uuid"],
                 "lokal",
                 "vps",
@@ -278,6 +286,12 @@ while True:
         "visit",
         "sync/visit"
     )
-
+    
+    # sync data users
+    sync_data(
+        "users",
+        "sync/users"
+    )
+    
     # delay worker 5 detik
     time.sleep(5)
