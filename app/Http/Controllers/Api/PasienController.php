@@ -52,38 +52,43 @@ class PasienController extends Controller
 
     // ================= UPDATE PASIEN =================
     public function update(Request $request, $id)
-{
-    $pasien = Pasien::find($id);
+    {
+        $pasien = Pasien::find($id);
 
-    if (!$pasien) {
+        if (!$pasien) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Pasien tidak ditemukan'
+            ], 404);
+        }
+
+        // ✅ Pakai nilai lama kalau field tidak dikirim
+        $pasien->nama = $request->nama ?? $pasien->nama;
+        $pasien->jenis_kelamin = $request->jenis_kelamin ?? $pasien->jenis_kelamin;
+        $pasien->tanggal_lahir = $request->tanggal_lahir ?? $pasien->tanggal_lahir;
+        $pasien->dokter_id = $request->has('dokter_id') ? $request->dokter_id : $pasien->dokter_id;
+        $pasien->status = $request->status ?? $pasien->status;
+        $pasien->catatan_keluar = $request->catatan_keluar ?? $pasien->catatan_keluar;
+
+        if ($pasien->status == 'pulang' || $pasien->status == 'meninggal') {
+            $pasien->tanggal_keluar = now()->toDateString();
+        } else {
+            $pasien->tanggal_keluar = null;
+        }
+
+        // TANDAI PERLU SYNC ULANG
+        $pasien->status_sync = 'pending';
+        $pasien->synced_at = null;
+        $pasien->save();
+        app(\App\Http\Controllers\Api\SyncController::class)
+        ->kirimPasien();
+        
         return response()->json([
-            'success' => false,
-            'message' => 'Pasien tidak ditemukan'
-        ], 404);
+            'success' => true,
+            'message' => 'Data pasien berhasil diupdate',
+            'data' => $pasien->load('dokter')
+        ]);
     }
-
-    // ✅ Pakai nilai lama kalau field tidak dikirim
-    $pasien->nama = $request->nama ?? $pasien->nama;
-    $pasien->jenis_kelamin = $request->jenis_kelamin ?? $pasien->jenis_kelamin;
-    $pasien->tanggal_lahir = $request->tanggal_lahir ?? $pasien->tanggal_lahir;
-    $pasien->dokter_id = $request->has('dokter_id') ? $request->dokter_id : $pasien->dokter_id;
-    $pasien->status = $request->status ?? $pasien->status;
-    $pasien->catatan_keluar = $request->catatan_keluar ?? $pasien->catatan_keluar;
-
-    if ($pasien->status == 'pulang' || $pasien->status == 'meninggal') {
-        $pasien->tanggal_keluar = now()->toDateString();
-    } else {
-        $pasien->tanggal_keluar = null;
-    }
-
-    $pasien->save();
-
-    return response()->json([
-        'success' => true,
-        'message' => 'Data pasien berhasil diupdate',
-        'data' => $pasien->load('dokter')
-    ]);
-}
 
     // ================= DELETE PASIEN =================
     public function destroy($id)
