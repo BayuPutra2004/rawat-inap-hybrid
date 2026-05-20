@@ -46,6 +46,7 @@ Route::get('/ping', function () {
 // ================= SYNC (TANPA LOGIN) =================
 Route::post('/sync/pasien', [SyncController::class, 'syncPasien']);
 Route::post('/sync/visit', [SyncController::class, 'syncVisit']);
+Route::post('/sync/users', [SyncController::class, 'syncUsers']);
 
 Route::post('/sync/kirim-pasien', [SyncController::class, 'kirimPasien']);
 Route::post('/sync/kirim-visit',  [SyncController::class, 'kirimVisit']);
