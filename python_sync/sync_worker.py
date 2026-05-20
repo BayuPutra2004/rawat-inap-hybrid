@@ -2,7 +2,6 @@ import pymysql
 import requests
 import time
 
-
 # KONFIGURASI DATABASE LOKAL
 db_config = {
     "host": "127.0.0.1",
@@ -11,159 +10,274 @@ db_config = {
     "database": "rawat_inap"
 }
 
-
 # URL SERVER VPS / PUBLIK
 BASE_URL = "http://103.87.67.113:8001/api"
 
 
-# FUNCTION SYNC PASIEN
-def sync_pasien():
+# FUNCTION SIMPAN LOG SINKRONISASI
+#----------------------------------------------------
+# Fungsi ini digunakan untuk menyimpan histori sync
+# ke tabel sync_log agar dapat dianalisis pada BAB 4
+# seperti:
+# - waktu sinkronisasi
+# - keberhasilan sync
+# - error sync
+# - monitoring hybrid network
+def save_sync_log(
+    cursor,
+    table_name,
+    data_uuid,
+    source_server,
+    target_server,
+    sync_status,
+    duration_ms,
+    message
+):
+    query = """
+    INSERT INTO sync_log (
+        table_name,
+        data_uuid,
+        source_server,
+        target_server,
+        sync_status,
+        sync_duration_ms,
+        message,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        %s,%s,%s,%s,%s,%s,%s,NOW(),NOW()
+    )
+    """
 
+    cursor.execute(query, (
+        table_name,
+        data_uuid,
+        source_server,
+        target_server,
+        sync_status,
+        duration_ms,
+        message
+    ))
+
+# FUNCTION GENERIC SYNC DATA
+#-----------------------------------
+# Fungsi ini dibuat generic agar:
+# - tidak duplicate code
+# - lebih profesional
+# - mudah dikembangkan
+# - siap two-way synchronization
+#
+# Parameter:
+# table_name = nama tabel database
+# endpoint   = endpoint API tujuan
+def sync_data(table_name, endpoint):
+
+    # koneksi database
     db = pymysql.connect(**db_config)
 
     cursor = db.cursor(pymysql.cursors.DictCursor)
 
-    # ambil data pasien pending
-    query = """
-    SELECT * FROM pasien
+    print(f"\n[SYNC {table_name.upper()}]")
+    print("CEK DATA PENDING...")
+
+    # AMBIL DATA YANG BELUM TERSINKRON
+    #------------------------------------------------
+    # source_server='lokal'
+    # penting untuk mencegah infinite loop
+    # saat nanti two-way sync aktif
+    query = f"""
+    SELECT * FROM {table_name}
     WHERE status_sync='pending'
+    AND source_server='lokal'
     """
 
     cursor.execute(query)
 
     hasil = cursor.fetchall()
 
-    print("\n[SYNC PASIEN]")
-    print("CEK DATA PASIEN PENDING...")
+    # jika tidak ada data
+    if not hasil:
 
-    if hasil:
+        print("TIDAK ADA DATA PENDING")
 
-        # ubah semua data menjadi string
-        for pasien in hasil:
+        db.close()
 
-            for key, value in pasien.items():
+        return
 
-                if value is not None:
-                    pasien[key] = str(value)
+    # UBAH SEMUA DATA MENJADI STRING
+    # agar JSON serializable
+    # terutama untuk datetime/date
+    for item in hasil:
 
-        try:
+        for key, value in item.items():
 
-            # kirim ke VPS
-            response = requests.post(
-                f"{BASE_URL}/sync/pasien",
-                json=hasil,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json"
-                }
+            if value is not None:
+                item[key] = str(value)
+
+    try:
+
+        # UPDATE STATUS MENJADI syncing
+        # menandakan data sedang diproses sync
+        ids = [str(item['id']) for item in hasil]
+
+        update_syncing = f"""
+        UPDATE {table_name}
+        SET status_sync='syncing'
+        WHERE id IN ({','.join(ids)})
+        """
+
+        cursor.execute(update_syncing)
+
+        db.commit()
+
+        # HITUNG WAKTU SINKRONISASI
+        start_time = time.time()
+
+        # KIRIM DATA KE VPS
+        response = requests.post(
+            f"{BASE_URL}/{endpoint}",
+            json=hasil,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            },
+
+            # timeout agar worker tidak hang
+            timeout=10
+        )
+
+        end_time = time.time()
+
+        # konversi ke milidetik
+        duration_ms = int((end_time - start_time) * 1000)
+
+        print("STATUS :", response.status_code)
+        print("RESPON :", response.text)
+        print(f"DURATION : {duration_ms} ms")
+
+        # CHECK RESPONSE API
+        if (
+            response.status_code == 200 and
+            response.json().get("success")
+        ):
+
+            # UPDATE STATUS MENJADI synced
+            update_synced = f"""
+            UPDATE {table_name}
+            SET
+                status_sync='synced',
+                synced_at=NOW()
+            WHERE id IN ({','.join(ids)})
+            """
+
+            cursor.execute(update_synced)
+
+            db.commit()
+
+            # SIMPAN LOG BERHASIL
+            for item in hasil:
+
+                save_sync_log(
+                    cursor,
+                    table_name,
+                    item["uuid"],
+                    "lokal",
+                    "vps",
+                    "success",
+                    duration_ms,
+                    f"Sync {table_name} berhasil"
+                )
+
+            db.commit()
+
+            print(f"SYNC {table_name.upper()} BERHASIL")
+
+        else:
+
+            # JIKA RESPONSE GAGAL
+            for item in hasil:
+
+                save_sync_log(
+                    cursor,
+                    table_name,
+                    item["uuid"],
+                    "lokal",
+                    "vps",
+                    "failed",
+                    duration_ms,
+                    response.text
+                )
+
+            # kembalikan status menjadi pending
+            rollback_query = f"""
+            UPDATE {table_name}
+            SET status_sync='pending'
+            WHERE id IN ({','.join(ids)})
+            """
+
+            cursor.execute(rollback_query)
+
+            db.commit()
+
+            print(f"SYNC {table_name.upper()} GAGAL")
+
+    except Exception as e:
+
+        # JIKA TERJADI ERROR
+        print(f"SYNC {table_name.upper()} ERROR :", e)
+
+        # simpan log gagal
+        for item in hasil:
+
+            save_sync_log(
+                cursor,
+                table_name,
+                item["uuid"],
+                "lokal",
+                "vps",
+                "failed",
+                0,
+                str(e)
             )
 
-            print("STATUS:", response.status_code)
-            print("RESPON:", response.text)
+        # KEMBALIKAN STATUS KE pending
+        rollback_query = f"""
+        UPDATE {table_name}
+        SET status_sync='pending'
+        WHERE id IN ({','.join(ids)})
+        """
 
-            # jika berhasil
-            if response.status_code == 200:
+        cursor.execute(rollback_query)
 
-                ids = [str(item['id']) for item in hasil]
+        db.commit()
 
-                update_query = f"""
-                UPDATE pasien
-                SET status_sync='synced'
-                WHERE id IN ({','.join(ids)})
-                """
+    finally:
 
-                cursor.execute(update_query)
-
-                db.commit()
-
-                print("SYNC PASIEN BERHASIL")
-
-        except Exception as e:
-
-            print("SYNC PASIEN GAGAL:", e)
-
-    db.close()
+        # tutup koneksi database
+        db.close()
 
 
-# FUNCTION SYNC VISIT
-def sync_visit():
-
-    db = pymysql.connect(**db_config)
-
-    cursor = db.cursor(pymysql.cursors.DictCursor)
-
-    # ambil data visit pending
-    query = """
-    SELECT * FROM visit
-    WHERE status_sync='pending'
-    """
-
-    cursor.execute(query)
-
-    hasil = cursor.fetchall()
-
-    print("\n[SYNC VISIT]")
-    print("CEK DATA VISIT PENDING...")
-
-    if hasil:
-
-        # ubah semua data menjadi string
-        for visit in hasil:
-
-            for key, value in visit.items():
-
-                if value is not None:
-                    visit[key] = str(value)
-
-        try:
-
-            # kirim ke VPS
-            response = requests.post(
-                f"{BASE_URL}/sync/visit",
-                json=hasil,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json"
-                }
-            )
-
-            print("STATUS:", response.status_code)
-            print("RESPON:", response.text)
-
-            # jika berhasil
-            if response.status_code == 200:
-
-                ids = [str(item['id']) for item in hasil]
-
-                update_query = f"""
-                UPDATE visit
-                SET status_sync='synced'
-                WHERE id IN ({','.join(ids)})
-                """
-
-                cursor.execute(update_query)
-
-                db.commit()
-
-                print("SYNC VISIT BERHASIL")
-
-        except Exception as e:
-
-            print("SYNC VISIT GAGAL:", e)
-
-    db.close()
-
-
-# =========================
 # MAIN WORKER LOOP
-# =========================
+#----------------------
+# Worker berjalan terus menerus
+# setiap 5 detik untuk:
+# - cek data pending
+# - sinkronisasi otomatis
+# - monitoring hybrid network
 while True:
 
-    # jalankan sync pasien
-    sync_pasien()
+    # sync data pasien
+    sync_data(
+        "pasien",
+        "sync/pasien"
+    )
 
-    # jalankan sync visit
-    sync_visit()
+    # sync data visit
+    sync_data(
+        "visit",
+        "sync/visit"
+    )
 
-    # delay 5 detik
+    # delay worker 5 detik
     time.sleep(5)
