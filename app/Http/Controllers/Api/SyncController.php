@@ -64,6 +64,7 @@ class SyncController extends Controller
                     'synced_at' => now(),
                     'source_server' => $item['source_server'],
                     'action_type' => $item['action_type'],
+                    'is_deleted' => $item['is_deleted'],
                     'created_at' =>  $item['created_at'],
                     'updated_at' => $item['updated_at']
                 ]);
@@ -140,6 +141,7 @@ class SyncController extends Controller
                     'created_at' => $item['created_at'],
                     'updated_at' => $item['updated_at'],
                     'action_type' => $item['action_type'],
+                    'is_deleted' => $item['is_deleted'],
                 ]);
 
             } else {
