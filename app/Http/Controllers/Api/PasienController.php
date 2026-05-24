@@ -78,11 +78,19 @@ class PasienController extends Controller
             $pasien->nama = $request->nama ?? $pasien->nama;
             $pasien->jenis_kelamin = $request->jenis_kelamin ?? $pasien->jenis_kelamin;
             $pasien->tanggal_lahir = $request->tanggal_lahir ?? $pasien->tanggal_lahir;
-            // AMBIL UUID DOKTER
+            
+            // UPDATE DOKTER
+            $pasien->dokter_id =
+                $request->has('dokter_id')
+                ? $request->dokter_id
+                : $pasien->dokter_id;
+
+            // AMBIL UUID DOKTER BARU
             $dokter = \App\Models\User::find($pasien->dokter_id);
 
             $pasien->dokter_uuid =
                 $dokter ? $dokter->uuid : null;
+
             $pasien->status = $request->status ?? $pasien->status;
             $pasien->catatan_keluar = $request->catatan_keluar ?? $pasien->catatan_keluar;
 
