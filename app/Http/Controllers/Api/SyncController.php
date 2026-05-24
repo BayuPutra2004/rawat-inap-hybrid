@@ -141,7 +141,6 @@ class SyncController extends Controller
                     'created_at' => $item['created_at'],
                     'updated_at' => $item['updated_at'],
                     'action_type' => $item['action_type'],
-                    'is_deleted' => $item['is_deleted'],
                 ]);
 
             } else {
