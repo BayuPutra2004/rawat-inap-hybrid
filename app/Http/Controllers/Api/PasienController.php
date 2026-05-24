@@ -11,8 +11,10 @@ class PasienController extends Controller
     // ================= GET ALL PASIEN =================
     public function index()
     {
-        $pasien = Pasien::with('dokter')->get();
-
+        $pasien = Pasien::with('dokter')
+            ->where('is_deleted', false)
+            ->get();
+        
         return response()->json([
             'success' => true,
             'data' => $pasien
@@ -158,7 +160,9 @@ class PasienController extends Controller
     // ================= PASIEN BY DOKTER =================
     public function pasienByDokter($id)
     {
-        $pasien = Pasien::where('dokter_id', $id)
+        $pasien = 
+        Pasien::where('dokter_id', $id)
+        ->where('is_deleted', false)
             ->with('dokter')
             ->get();
 
@@ -171,7 +175,10 @@ class PasienController extends Controller
     // ================= DETAIL PASIEN =================
     public function show($id)
     {
-        $pasien = Pasien::with('dokter')->find($id);
+        $pasien = 
+        Pasien::with('dokter')
+        ->where('is_deleted', false)
+        ->find($id);
 
         if (!$pasien) {
             return response()->json([
