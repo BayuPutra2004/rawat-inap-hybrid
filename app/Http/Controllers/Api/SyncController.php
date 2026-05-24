@@ -26,12 +26,18 @@ class SyncController extends Controller
             //hendle delete
             if (
                 isset($item['is_deleted'])
-                && $item['is_deleted']
+                && (
+                    $item['is_deleted'] == 1 ||
+                    $item['is_deleted'] == "1"
+                )
             ) {
-
                 if ($existing) {
-
-                    $existing->delete();
+                    $existing->update([
+                        'is_deleted' => true,
+                        'status_sync' => 'synced',
+                        'action_type' => 'delete',
+                        'synced_at' => now()
+                    ]);
                 }
 
                 continue;
