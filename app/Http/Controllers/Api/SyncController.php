@@ -23,6 +23,19 @@ class SyncController extends Controller
 
             // CEK DATA PASIEN
             $existing = Pasien::where('uuid',$item['uuid'])->first();
+            //hendle delete
+            if (
+                isset($item['is_deleted'])
+                && $item['is_deleted']
+            ) {
+
+                if ($existing) {
+
+                    $existing->delete();
+                }
+
+                continue;
+            }
 
             // DATA BARU
             if (!$existing) {
