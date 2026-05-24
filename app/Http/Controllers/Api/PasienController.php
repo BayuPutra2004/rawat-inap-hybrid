@@ -128,6 +128,7 @@ class PasienController extends Controller
     {
         $pasien = Pasien::find($id);
 
+        // CEK PASIEN
         if (!$pasien) {
             return response()->json([
                 'success' => false,
@@ -135,10 +136,22 @@ class PasienController extends Controller
             ], 404);
         }
 
-        $pasien->delete();
+        // SOFT DELETE HYBRID SYNC
+        $pasien->is_deleted = true;
 
+        // TANDAI PERLU SYNC
+        $pasien->status_sync = 'pending';
+        $pasien->source_server = 'lokal';
+        $pasien->synced_at = null;
+
+        // ACTION DELETE
+        $pasien->action_type = 'delete';
+
+        // SIMPAN
+        $pasien->save();
         return response()->json([
-            'success' => true
+            'success' => true,
+            'message' => 'Pasien berhasil dihapus'
         ]);
     }
 
