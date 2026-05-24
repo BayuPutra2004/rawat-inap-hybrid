@@ -15,16 +15,19 @@ class Pasien extends Model
         'jenis_kelamin',
         'tanggal_lahir',
         'dokter_id',
+        'dokter_uuid',
         'is_active',
         'status',
         'tanggal_keluar',
         'catatan_keluar',
 
-        // 🔥 FIELD UNTUK SINKRONISASI
+        // FIELD SINKRONISASI
         'uuid',
         'status_sync',
         'synced_at',
         'source_server',
+        'action_type',
+        'is_deleted'
     ];
 
     /**
