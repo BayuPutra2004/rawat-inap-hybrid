@@ -10,6 +10,9 @@ db_config = {
     "database": "rawat_inap"
 }
 
+# MENYIMPAN ERROR TERAKHIR
+last_errors = {}
+
 # URL SERVER VPS / PUBLIK
 BASE_URL = "http://103.87.67.113:8001/api"
 
@@ -98,28 +101,21 @@ def sync_data(table_name, endpoint):
     """
 
     cursor.execute(query)
-
     hasil = cursor.fetchall()
 
     # jika tidak ada data
     if not hasil:
-
         print("TIDAK ADA DATA PENDING")
-
         db.close()
-
         return
 
     # UBAH SEMUA DATA MENJADI STRING
     # agar JSON serializable
     # terutama untuk datetime/date
     for item in hasil:
-
         for key, value in item.items():
-
             if value is not None:
                 item[key] = str(value)
-
     try:
 
         # UPDATE STATUS MENJADI syncing
@@ -133,7 +129,6 @@ def sync_data(table_name, endpoint):
         """
 
         cursor.execute(update_syncing)
-
         db.commit()
 
         # HITUNG WAKTU SINKRONISASI
@@ -177,12 +172,10 @@ def sync_data(table_name, endpoint):
             """
 
             cursor.execute(update_synced)
-
             db.commit()
 
             # SIMPAN LOG BERHASIL
             for item in hasil:
-
                 save_sync_log(
                     cursor,
                     table_name,
@@ -194,13 +187,14 @@ def sync_data(table_name, endpoint):
                     duration_ms,
                     f"Sync {table_name} berhasil"
                 )
-
+                
             db.commit()
-
             print(f"SYNC {table_name.upper()} BERHASIL")
-
+            
+            # RESET ERROR JIKA SUDAH BERHASIL
+            last_errors[table_name] = None
+            
         else:
-
             # JIKA RESPONSE GAGAL
             for item in hasil:
 
@@ -224,30 +218,41 @@ def sync_data(table_name, endpoint):
             """
 
             cursor.execute(rollback_query)
+            db.commit()
+            print(f"SYNC {table_name.upper()} GAGAL")
+    
+    except Exception as e:
+        error_message = str(e)
+
+        # PESAN ERROR LEBIH RAPI
+        if "Failed to establish a new connection" in error_message:
+            clean_message = "SERVER VPS OFFLINE / TIDAK TERHUBUNG"
+        else:
+            clean_message = error_message
+        print(f"SYNC {table_name.upper()} GAGAL")
+        print("ERROR :", clean_message)
+
+        # CEK AGAR TIDAK SPAM LOG ERROR SAMA
+        if last_errors.get(table_name) != clean_message:
+
+            # SIMPAN LOG SEKALI SAJA
+            for item in hasil:
+                save_sync_log(
+                    cursor,
+                    table_name,
+                    item["action_type"],
+                    item["uuid"],
+                    "lokal",
+                    "vps",
+                    "failed",
+                    0,
+                    clean_message
+                )
 
             db.commit()
-
-            print(f"SYNC {table_name.upper()} GAGAL")
-
-    except Exception as e:
-
-        # JIKA TERJADI ERROR
-        print(f"SYNC {table_name.upper()} ERROR :", e)
-
-        # simpan log gagal
-        for item in hasil:
-
-            save_sync_log(
-                cursor,
-                table_name,
-                item["action_type"],
-                item["uuid"],
-                "lokal",
-                "vps",
-                "failed",
-                0,
-                str(e)
-            )
+            
+            # SIMPAN ERROR TERAKHIR
+            last_errors[table_name] = clean_message
 
         # KEMBALIKAN STATUS KE pending
         rollback_query = f"""
@@ -257,14 +262,12 @@ def sync_data(table_name, endpoint):
         """
 
         cursor.execute(rollback_query)
-
         db.commit()
-
     finally:
+
 
         # tutup koneksi database
         db.close()
-
 
 # MAIN WORKER LOOP
 #----------------------
