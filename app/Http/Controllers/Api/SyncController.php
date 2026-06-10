@@ -137,7 +137,7 @@ class SyncController extends Controller
                     'uuid' => $item['uuid'],
                     'status_sync' => 'synced',
                     'synced_at' => now(),
-                    'source_server' => 'source_server',
+                    'source_server' => $item['source_server'],
                     'created_at' => $item['created_at'],
                     'updated_at' => $item['updated_at'],
                     'action_type' => $item['action_type'],
@@ -159,7 +159,17 @@ class SyncController extends Controller
                     ]);
                 } else {
                     $existing->update([
-                        'status_sync' => 'conflict'
+                        'pasien_id' => $pasien?->id,
+                        'dokter_id' => $dokter?->id,
+                        'keluhan' => $item['keluhan'],
+                        'diagnosa' => $item['diagnosa'],
+                        'tindakan' => $item['tindakan'],
+
+                        'source_server' => $item['source_server'],
+
+                        'status_sync' => 'synced',
+                        'action_type' => $item['action_type'],
+                        'synced_at' => now(),
                     ]);
                 }
             }

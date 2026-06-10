@@ -17,13 +17,13 @@ class Visit extends Model
         'keluhan',
         'diagnosa',
         'tindakan',
-        'tanggal',
 
-        // 🔥 FIELD SYNC
+        // FIELD SYNC
         'uuid',
         'status_sync',
         'synced_at',
         'source_server',
+        'action_type',
     ];
 
     /**

@@ -66,6 +66,15 @@ class PasienController extends Controller
     public function update(Request $request, $id)
     {
         try {
+            $request->validate([
+                'nama'          => 'sometimes|string|max:255',
+                'jenis_kelamin' => 'sometimes|in:Laki-laki,Perempuan',
+                'tanggal_lahir' => 'sometimes|date',
+                'dokter_id'     => 'sometimes|nullable|exists:users,id',
+                'status'        => 'sometimes|in:dirawat,pulang,meninggal',
+                'catatan_keluar'=> 'sometimes|nullable|string|max:1000',
+            ]);
+
             $pasien = Pasien::find($id);
             if (!$pasien) {
                 return response()->json([

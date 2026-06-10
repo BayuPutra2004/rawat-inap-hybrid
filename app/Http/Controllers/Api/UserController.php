@@ -22,17 +22,22 @@ class UserController extends Controller
     // TAMBAH DOKTER
     public function storeDokter(Request $request)
     {
-	$request->validate([
-            'name' => 'required',
-            'email' => 'required|email|unique:users,email',
+        $request->validate([
+            'name'     => 'required',
+            'email'    => 'required|email|unique:users,email',
             'password' => 'required|min:6',
         ]);
 
         $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-            'role' => 'dokter',
+            'name'          => $request->name,
+            'email'         => $request->email,
+            'password'      => Hash::make($request->password),
+            'role'          => 'dokter',
+
+            // HYBRID SYNC — dokter baru harus tersinkron ke VPS
+            'status_sync'   => 'pending',
+            'source_server' => env('SERVER_ROLE', 'lokal'),
+            'action_type'   => 'create',
         ]);
 
         return response()->json(['data' => $user]);
@@ -41,17 +46,21 @@ class UserController extends Controller
     // EDIT DOKTER
     public function updateDokter(Request $request, $id)
     {
-	\Log::info('UPDATE MASUK', $request->all()); // 🔥 deb
+        $user = User::findOrFail($id);
 
-	$user = User::findOrFail($id);
+        $user->update([
+            'name'          => $request->input('name'),
+            'email'         => $request->input('email'),
 
-	$user->update([
-	      'name' => $request->input('name'),   // 🔥 WAJIB pakai input()
-	      'email' => $request->input('email'),
-	]);
-	    return response()->json([
-           'data' => $user
-	]);
+            // HYBRID SYNC — perubahan dokter harus tersinkron ke VPS
+            'status_sync'   => 'pending',
+            'source_server' => env('SERVER_ROLE', 'lokal'),
+            'action_type'   => 'update',
+        ]);
+
+        return response()->json([
+            'data' => $user
+        ]);
     }
 
     // DELETE DOKTER

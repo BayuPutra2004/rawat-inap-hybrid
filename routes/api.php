@@ -43,14 +43,17 @@ Route::get('/ping', function () {
     ]);
 });
 
-// ================= SYNC (TANPA LOGIN) =================
-Route::post('/sync/pasien', [SyncController::class, 'syncPasien']);
-Route::post('/sync/visit', [SyncController::class, 'syncVisit']);
-Route::post('/sync/users', [SyncController::class, 'syncUsers']);
+// ================= SYNC (DENGAN TOKEN PENGAMAN) =================
+use App\Http\Middleware\VerifySyncToken;
 
-Route::post('/sync/kirim-pasien', [SyncController::class, 'kirimPasien']);
-Route::post('/sync/kirim-visit',  [SyncController::class, 'kirimVisit']);
-   
+Route::middleware(VerifySyncToken::class)->group(function () {
+    Route::post('/sync/pasien', [SyncController::class, 'syncPasien']);
+    Route::post('/sync/visit', [SyncController::class, 'syncVisit']);
+    Route::post('/sync/users', [SyncController::class, 'syncUsers']);
+    Route::post('/sync/kirim-pasien', [SyncController::class, 'kirimPasien']);
+    Route::post('/sync/kirim-visit',  [SyncController::class, 'kirimVisit']);
+});
+
 
 // ================= WAJIB LOGIN =================
 Route::middleware('auth:sanctum')->group(function () {

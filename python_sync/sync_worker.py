@@ -16,6 +16,9 @@ last_errors = {}
 # URL SERVER VPS / PUBLIK
 BASE_URL = "http://103.87.67.113:8001/api"
 
+# TOKEN PENGAMAN SINKRONISASI (Harus sama dengan SYNC_SECRET_KEY di .env Laravel)
+SYNC_TOKEN = "SyncSecretToken2026Secure"
+
 
 # FUNCTION SIMPAN LOG SINKRONISASI
 #----------------------------------------------------
@@ -140,7 +143,8 @@ def sync_data(table_name, endpoint):
             json=hasil,
             headers={
                 "Content-Type": "application/json",
-                "Accept": "application/json"
+                "Accept": "application/json",
+                "X-Sync-Token": SYNC_TOKEN
             },
 
             # timeout agar worker tidak hang
