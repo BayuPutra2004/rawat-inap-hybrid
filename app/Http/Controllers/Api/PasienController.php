@@ -68,7 +68,7 @@ class PasienController extends Controller
         try {
             $request->validate([
                 'nama'          => 'sometimes|string|max:255',
-                'jenis_kelamin' => 'sometimes|in:Laki-laki,Perempuan',
+                'jenis_kelamin' => 'sometimes|in:L,P',
                 'tanggal_lahir' => 'sometimes|date',
                 'dokter_id'     => 'sometimes|nullable|exists:users,id',
                 'status'        => 'sometimes|in:dirawat,pulang,meninggal',
