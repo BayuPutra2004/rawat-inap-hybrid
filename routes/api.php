@@ -60,6 +60,11 @@ Route::middleware(VerifySyncToken::class)->group(function () {
     Route::post('/sync/acknowledge-pasien', [SyncController::class, 'acknowledgePasien']);
     Route::post('/sync/acknowledge-visit', [SyncController::class, 'acknowledgeVisit']);
     Route::post('/sync/acknowledge-users', [SyncController::class, 'acknowledgeUsers']);
+
+    // RECOVERY / SELF-HEALING ROUTES
+    Route::get('/sync/all-pasien', [SyncController::class, 'getAllPasien']);
+    Route::get('/sync/all-visit', [SyncController::class, 'getAllVisit']);
+    Route::get('/sync/all-users', [SyncController::class, 'getAllUsers']);
 });
 
 

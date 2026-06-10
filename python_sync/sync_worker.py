@@ -296,13 +296,11 @@ def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
 
         if response.status_code != 200:
             print(f"PULL {table_name.upper()} GAGAL - Status: {response.status_code}")
-            db.close()
             return
 
         hasil = response.json()
         if not hasil:
             print("TIDAK ADA DATA PENDING DI VPS")
-            db.close()
             return
 
         print(f"MENERIMA {len(hasil)} DATA PENDING DARI VPS")
@@ -344,6 +342,19 @@ def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
                 elif k in ['is_active', 'is_deleted']:
                     if v is not None:
                         item[k] = 1 if str(v).lower() in ['true', '1'] else 0
+                elif k in ['created_at', 'updated_at', 'synced_at']:
+                    if v is not None:
+                        # Konversi format datetime ISO ke standar MySQL YYYY-MM-DD HH:MM:SS
+                        val_str = str(v).replace('T', ' ')
+                        if '.' in val_str:
+                            val_str = val_str.split('.')[0]
+                        elif val_str.endswith('Z'):
+                            val_str = val_str[:-1]
+                        item[k] = val_str
+                elif k in ['tanggal_lahir', 'tanggal_keluar']:
+                    if v is not None:
+                        # Ambil tanggal saja (YYYY-MM-DD)
+                        item[k] = str(v).split('T')[0]
 
             # Resolusi relasi foreign key ke ID lokal berdasarkan UUID
             if table_name == 'pasien':
@@ -463,6 +474,190 @@ def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
         db.rollback()
     finally:
         db.close()
+# FUNCTION RECOVERY / SELF-HEALING (VPS -> LOKAL)
+#----------------------------------------------------
+def recover_lost_data(table_name, endpoint):
+    # Koneksi ke database lokal
+    db = pymysql.connect(**db_config)
+    cursor = db.cursor(pymysql.cursors.DictCursor)
+
+    print(f"\n[RECOVERY {table_name.upper()}]")
+    print("MENGAMBIL DATA RECOVERY DARI VPS...")
+
+    try:
+        # Kirim request GET ke VPS untuk mengambil semua data
+        response = requests.get(
+            f"{BASE_URL}/{endpoint}",
+            headers={
+                "Accept": "application/json",
+                "X-Sync-Token": SYNC_TOKEN
+            },
+            timeout=15
+        )
+
+        if response.status_code != 200:
+            print(f"RECOVERY {table_name.upper()} GAGAL - Status: {response.status_code}")
+            return
+
+        hasil = response.json()
+        if not hasil:
+            print("TIDAK ADA DATA RECOVERY DI VPS")
+            return
+
+        print(f"MENERIMA {len(hasil)} DATA RECOVERY DARI VPS")
+
+        recovered_count = 0
+        updated_count = 0
+        start_time = time.time()
+
+        # Tentukan kolom yang valid untuk masing-masing tabel
+        if table_name == 'pasien':
+            allowed_columns = [
+                'uuid', 'no_rm', 'nama', 'jenis_kelamin', 'tanggal_lahir',
+                'dokter_id', 'dokter_uuid', 'status', 'tanggal_keluar',
+                'catatan_keluar', 'is_active', 'status_sync', 'source_server',
+                'action_type', 'is_deleted', 'created_at', 'updated_at'
+            ]
+        elif table_name == 'visit':
+            allowed_columns = [
+                'uuid', 'pasien_id', 'dokter_id', 'pasien_uuid', 'dokter_uuid',
+                'keluhan', 'diagnosa', 'tindakan', 'status_sync', 'source_server',
+                'action_type', 'created_at', 'updated_at'
+            ]
+        elif table_name == 'users':
+            allowed_columns = [
+                'uuid', 'name', 'email', 'password', 'role', 'status_sync',
+                'source_server', 'action_type', 'created_at', 'updated_at'
+            ]
+        else:
+            allowed_columns = []
+
+        for item in hasil:
+            uuid_val = item.get('uuid')
+            if not uuid_val:
+                continue
+
+            # Bersihkan dan sanitisasi nilai-nilai JSON
+            for k, v in item.items():
+                if v == 'None' or v == 'null' or v == '' or v is None:
+                    item[k] = None
+                elif k in ['is_active', 'is_deleted']:
+                    if v is not None:
+                        item[k] = 1 if str(v).lower() in ['true', '1'] else 0
+                elif k in ['created_at', 'updated_at', 'synced_at']:
+                    if v is not None:
+                        val_str = str(v).replace('T', ' ')
+                        if '.' in val_str:
+                            val_str = val_str.split('.')[0]
+                        elif val_str.endswith('Z'):
+                            val_str = val_str[:-1]
+                        item[k] = val_str
+                elif k in ['tanggal_lahir', 'tanggal_keluar']:
+                    if v is not None:
+                        item[k] = str(v).split('T')[0]
+
+            # Resolusi relasi foreign key ke ID lokal berdasarkan UUID
+            if table_name == 'pasien':
+                dokter_uuid = item.get('dokter_uuid')
+                if dokter_uuid:
+                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
+                    res = cursor.fetchone()
+                    item['dokter_id'] = res['id'] if res else None
+                else:
+                    item['dokter_id'] = None
+
+            elif table_name == 'visit':
+                pasien_uuid = item.get('pasien_uuid')
+                if pasien_uuid:
+                    cursor.execute("SELECT id FROM pasien WHERE uuid = %s", (pasien_uuid,))
+                    res = cursor.fetchone()
+                    item['pasien_id'] = res['id'] if res else None
+                else:
+                    item['pasien_id'] = None
+
+                dokter_uuid = item.get('dokter_uuid')
+                if dokter_uuid:
+                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
+                    res = cursor.fetchone()
+                    item['dokter_id'] = res['id'] if res else None
+                else:
+                    item['dokter_id'] = None
+
+            # Pastikan semua key valid ada di item (isi dengan None jika absen)
+            for col in allowed_columns:
+                if col not in item:
+                    item[col] = None
+
+            # Cek apakah data sudah ada di database lokal
+            cursor.execute(f"SELECT * FROM {table_name} WHERE uuid = %s", (uuid_val,))
+            existing = cursor.fetchone()
+
+            if not existing:
+                # INSERT DATA HILANG / BARU
+                item['status_sync'] = 'synced'
+                columns = allowed_columns + ['synced_at']
+                placeholders = [f"%({col})s" for col in allowed_columns] + ['NOW()']
+
+                insert_query = f"""
+                INSERT INTO {table_name} ({', '.join(columns)})
+                VALUES ({', '.join(placeholders)})
+                """
+                cursor.execute(insert_query, item)
+                print(f"PEMULIHAN INSERT BERHASIL: {uuid_val}")
+                recovered_count += 1
+            else:
+                # UPDATE DATA JIKA DATA VPS LEBIH BARU
+                vps_updated_at = item.get('updated_at')
+                local_updated_at = existing.get('updated_at')
+
+                is_newer = False
+                if vps_updated_at:
+                    if not local_updated_at:
+                        is_newer = True
+                    else:
+                        is_newer = str(vps_updated_at) > str(local_updated_at)
+
+                if is_newer:
+                    item['status_sync'] = 'synced'
+                    update_parts = [f"{col} = %({col})s" for col in allowed_columns if col not in ['uuid', 'created_at']]
+                    update_parts.append("synced_at = NOW()")
+
+                    update_query = f"""
+                    UPDATE {table_name}
+                    SET {', '.join(update_parts)}
+                    WHERE uuid = %(uuid)s
+                    """
+                    cursor.execute(update_query, item)
+                    print(f"PEMULIHAN UPDATE BERHASIL: {uuid_val}")
+                    updated_count += 1
+
+        db.commit()
+        end_time = time.time()
+        duration_ms = int((end_time - start_time) * 1000)
+
+        # Simpan log recovery berhasil jika ada data yang dipulihkan/diupdate
+        if recovered_count > 0 or updated_count > 0:
+            print(f"RECOVERY {table_name.upper()} SELESAI: {recovered_count} DATA DIPULIHKAN, {updated_count} DATA DIUPDATE")
+            save_sync_log(
+                cursor,
+                table_name,
+                "recovery",
+                "-",
+                "vps",
+                "lokal",
+                "success",
+                duration_ms,
+                f"Recovery selesai. {recovered_count} dipulihkan, {updated_count} diupdate."
+            )
+            db.commit()
+        else:
+            print(f"RECOVERY {table_name.upper()} SELESAI: TIDAK ADA DATA LOKAL YANG HILANG/TERTANDINGI")
+
+    except Exception as e:
+        print(f"RECOVERY {table_name.upper()} ERROR:", str(e))
+        db.rollback()
+    finally:
+        db.close()
 
 
 # MAIN WORKER LOOP
@@ -472,6 +667,13 @@ def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
 # - PUSH: cek data pending lokal -> kirim ke VPS
 # - PULL: cek data pending VPS -> tarik ke lokal
 # - monitoring hybrid network
+
+print("\n=== MENJALANKAN DISASTER RECOVERY (SELF-HEALING) ===")
+recover_lost_data("users", "sync/all-users")
+recover_lost_data("pasien", "sync/all-pasien")
+recover_lost_data("visit", "sync/all-visit")
+print("=== DISASTER RECOVERY SELESAI. MASUK KE LOOP SINKRONISASI ===\n")
+
 while True:
 
     # 1. PUSH SINKRONISASI (Lokal -> VPS)

@@ -51,7 +51,7 @@ class PasienController extends Controller
 
             // HYBRID SYNC
             'status_sync' => 'pending',
-            'source_server' => 'lokal',
+            'source_server' => env('SERVER_ROLE', 'lokal'),
             'action_type' => 'create',
             'synced_at' => null
         ]);
@@ -116,7 +116,7 @@ class PasienController extends Controller
 
             // TANDAI PERLU SYNC ULANG
             $pasien->status_sync = 'pending';
-            $pasien->source_server = 'lokal';
+            $pasien->source_server = env('SERVER_ROLE', 'lokal');
             $pasien->synced_at = null;
 
             // for sync log
@@ -160,7 +160,7 @@ class PasienController extends Controller
 
         // TANDAI PERLU SYNC
         $pasien->status_sync = 'pending';
-        $pasien->source_server = 'lokal';
+        $pasien->source_server = env('SERVER_ROLE', 'lokal');
         $pasien->synced_at = null;
 
         // ACTION DELETE

@@ -250,7 +250,7 @@ class SyncController extends Controller
     {
         $startedAt = Carbon::now();
         $data = Pasien::where('status_sync', 'pending')
-        ->where('source_server', 'lokal')
+        ->where('source_server', env('SERVER_ROLE', 'lokal'))
         ->get();
 
         if ($data->isEmpty()) {
@@ -308,7 +308,7 @@ class SyncController extends Controller
     {
         $startedAt = Carbon::now();
         $data = Visit::where('status_sync', 'pending')
-            ->where('source_server', 'lokal')
+            ->where('source_server', env('SERVER_ROLE', 'lokal'))
             ->get();
         if ($data->isEmpty()) {
             return response()->json([
@@ -446,6 +446,23 @@ class SyncController extends Controller
                 ]);
         }
         return response()->json(['success' => true]);
+    }
+
+    // ================== RECOVERY / SELF-HEALING ENDPOINTS ==================
+
+    public function getAllPasien()
+    {
+        return response()->json(Pasien::all());
+    }
+
+    public function getAllVisit()
+    {
+        return response()->json(Visit::all());
+    }
+
+    public function getAllUsers()
+    {
+        return response()->json(\App\Models\User::all());
     }
 
     // ================== HELPER LOG ==================
