@@ -380,6 +380,74 @@ class SyncController extends Controller
         ]);
     }
 
+    // ================== PULL DATA (TWO-WAY SYNC) ==================
+
+    public function getPendingPasien()
+    {
+        $data = Pasien::where('status_sync', 'pending')
+            ->where('source_server', 'vps')
+            ->get();
+        return response()->json($data);
+    }
+
+    public function getPendingVisit()
+    {
+        $data = Visit::where('status_sync', 'pending')
+            ->where('source_server', 'vps')
+            ->get();
+        return response()->json($data);
+    }
+
+    public function getPendingUsers()
+    {
+        $data = \App\Models\User::where('status_sync', 'pending')
+            ->where('source_server', 'vps')
+            ->get();
+        return response()->json($data);
+    }
+
+    public function acknowledgePasien(Request $request)
+    {
+        $uuids = $request->input('uuids', []);
+        if (!empty($uuids)) {
+            Pasien::whereIn('uuid', $uuids)
+                ->where('source_server', 'vps')
+                ->update([
+                    'status_sync' => 'synced',
+                    'synced_at' => now(),
+                ]);
+        }
+        return response()->json(['success' => true]);
+    }
+
+    public function acknowledgeVisit(Request $request)
+    {
+        $uuids = $request->input('uuids', []);
+        if (!empty($uuids)) {
+            Visit::whereIn('uuid', $uuids)
+                ->where('source_server', 'vps')
+                ->update([
+                    'status_sync' => 'synced',
+                    'synced_at' => now(),
+                ]);
+        }
+        return response()->json(['success' => true]);
+    }
+
+    public function acknowledgeUsers(Request $request)
+    {
+        $uuids = $request->input('uuids', []);
+        if (!empty($uuids)) {
+            \App\Models\User::whereIn('uuid', $uuids)
+                ->where('source_server', 'vps')
+                ->update([
+                    'status_sync' => 'synced',
+                    'synced_at' => now(),
+                ]);
+        }
+        return response()->json(['success' => true]);
+    }
+
     // ================== HELPER LOG ==================
 
     private function catatLog(

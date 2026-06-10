@@ -273,32 +273,218 @@ def sync_data(table_name, endpoint):
         # tutup koneksi database
         db.close()
 
+# FUNCTION PULL & SYNC DATA DARI VPS KE LOKAL
+#----------------------------------------------------
+def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
+    # Koneksi ke database lokal
+    db = pymysql.connect(**db_config)
+    cursor = db.cursor(pymysql.cursors.DictCursor)
+
+    print(f"\n[PULL {table_name.upper()}]")
+    print("MENGAMBIL DATA DARI VPS...")
+
+    try:
+        # Kirim request GET ke VPS untuk mengambil data pending
+        response = requests.get(
+            f"{BASE_URL}/{pull_endpoint}",
+            headers={
+                "Accept": "application/json",
+                "X-Sync-Token": SYNC_TOKEN
+            },
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            print(f"PULL {table_name.upper()} GAGAL - Status: {response.status_code}")
+            db.close()
+            return
+
+        hasil = response.json()
+        if not hasil:
+            print("TIDAK ADA DATA PENDING DI VPS")
+            db.close()
+            return
+
+        print(f"MENERIMA {len(hasil)} DATA PENDING DARI VPS")
+
+        synced_uuids = []
+        start_time = time.time()
+
+        # Tentukan kolom yang valid untuk masing-masing tabel
+        if table_name == 'pasien':
+            allowed_columns = [
+                'uuid', 'no_rm', 'nama', 'jenis_kelamin', 'tanggal_lahir',
+                'dokter_id', 'dokter_uuid', 'status', 'tanggal_keluar',
+                'catatan_keluar', 'is_active', 'status_sync', 'source_server',
+                'action_type', 'is_deleted', 'created_at', 'updated_at'
+            ]
+        elif table_name == 'visit':
+            allowed_columns = [
+                'uuid', 'pasien_id', 'dokter_id', 'pasien_uuid', 'dokter_uuid',
+                'keluhan', 'diagnosa', 'tindakan', 'status_sync', 'source_server',
+                'action_type', 'created_at', 'updated_at'
+            ]
+        elif table_name == 'users':
+            allowed_columns = [
+                'uuid', 'name', 'email', 'password', 'role', 'status_sync',
+                'source_server', 'action_type', 'created_at', 'updated_at'
+            ]
+        else:
+            allowed_columns = []
+
+        for item in hasil:
+            uuid_val = item.get('uuid')
+            if not uuid_val:
+                continue
+
+            # Bersihkan dan sanitisasi nilai-nilai JSON
+            for k, v in item.items():
+                if v == 'None' or v == 'null' or v == '' or v is None:
+                    item[k] = None
+                elif k in ['is_active', 'is_deleted']:
+                    if v is not None:
+                        item[k] = 1 if str(v).lower() in ['true', '1'] else 0
+
+            # Resolusi relasi foreign key ke ID lokal berdasarkan UUID
+            if table_name == 'pasien':
+                dokter_uuid = item.get('dokter_uuid')
+                if dokter_uuid:
+                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
+                    res = cursor.fetchone()
+                    item['dokter_id'] = res['id'] if res else None
+                else:
+                    item['dokter_id'] = None
+
+            elif table_name == 'visit':
+                pasien_uuid = item.get('pasien_uuid')
+                if pasien_uuid:
+                    cursor.execute("SELECT id FROM pasien WHERE uuid = %s", (pasien_uuid,))
+                    res = cursor.fetchone()
+                    item['pasien_id'] = res['id'] if res else None
+                else:
+                    item['pasien_id'] = None
+
+                dokter_uuid = item.get('dokter_uuid')
+                if dokter_uuid:
+                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
+                    res = cursor.fetchone()
+                    item['dokter_id'] = res['id'] if res else None
+                else:
+                    item['dokter_id'] = None
+
+            # Pastikan semua key valid ada di item (isi dengan None jika absen)
+            for col in allowed_columns:
+                if col not in item:
+                    item[col] = None
+
+            # Cek apakah data sudah ada di database lokal
+            cursor.execute(f"SELECT * FROM {table_name} WHERE uuid = %s", (uuid_val,))
+            existing = cursor.fetchone()
+
+            if not existing:
+                # INSERT DATA BARU
+                item['status_sync'] = 'synced'
+                columns = allowed_columns + ['synced_at']
+                placeholders = [f"%({col})s" for col in allowed_columns] + ['NOW()']
+
+                insert_query = f"""
+                INSERT INTO {table_name} ({', '.join(columns)})
+                VALUES ({', '.join(placeholders)})
+                """
+                cursor.execute(insert_query, item)
+                print(f"INSERT LOKAL BERHASIL: {uuid_val}")
+            else:
+                # UPDATE DATA JIKA DATA VPS LEBIH BARU
+                vps_updated_at = item.get('updated_at')
+                local_updated_at = existing.get('updated_at')
+
+                is_newer = False
+                if vps_updated_at:
+                    if not local_updated_at:
+                        is_newer = True
+                    else:
+                        is_newer = str(vps_updated_at) > str(local_updated_at)
+
+                if is_newer:
+                    item['status_sync'] = 'synced'
+                    update_parts = [f"{col} = %({col})s" for col in allowed_columns if col not in ['uuid', 'created_at']]
+                    update_parts.append("synced_at = NOW()")
+
+                    update_query = f"""
+                    UPDATE {table_name}
+                    SET {', '.join(update_parts)}
+                    WHERE uuid = %(uuid)s
+                    """
+                    cursor.execute(update_query, item)
+                    print(f"UPDATE LOKAL BERHASIL: {uuid_val}")
+                else:
+                    print(f"SKIP UPDATE (LOKAL LEBIH BARU/SAMA): {uuid_val}")
+
+            synced_uuids.append(uuid_val)
+
+        db.commit()
+
+        # Kirim konfirmasi Acknowledgment ke VPS
+        if synced_uuids:
+            end_time = time.time()
+            duration_ms = int((end_time - start_time) * 1000)
+
+            ack_res = requests.post(
+                f"{BASE_URL}/{ack_endpoint}",
+                json={"uuids": synced_uuids},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "X-Sync-Token": SYNC_TOKEN
+                },
+                timeout=10
+            )
+
+            if ack_res.status_code == 200 and ack_res.json().get("success"):
+                print(f"ACK PULL {table_name.upper()} SUKSES DI VPS")
+                for uuid_val in synced_uuids:
+                    save_sync_log(
+                        cursor,
+                        table_name,
+                        "pull_insert",
+                        uuid_val,
+                        "vps",
+                        "lokal",
+                        "success",
+                        duration_ms,
+                        f"Pull sync {table_name} berhasil"
+                    )
+                db.commit()
+            else:
+                print(f"ACK PULL {table_name.upper()} GAGAL DI VPS: {ack_res.text}")
+
+    except Exception as e:
+        print(f"PULL {table_name.upper()} ERROR:", str(e))
+        db.rollback()
+    finally:
+        db.close()
+
+
 # MAIN WORKER LOOP
 #----------------------
 # Worker berjalan terus menerus
 # setiap 5 detik untuk:
-# - cek data pending
-# - sinkronisasi otomatis
+# - PUSH: cek data pending lokal -> kirim ke VPS
+# - PULL: cek data pending VPS -> tarik ke lokal
 # - monitoring hybrid network
 while True:
 
-    # sync data pasien
-    sync_data(
-        "pasien",
-        "sync/pasien"
-    )
+    # 1. PUSH SINKRONISASI (Lokal -> VPS)
+    # --------------------------------------------
+    sync_data("pasien", "sync/pasien")
+    sync_data("visit", "sync/visit")
+    sync_data("users", "sync/users")
 
-    # sync data visit
-    sync_data(
-        "visit",
-        "sync/visit"
-    )
-    
-    # sync data users
-    sync_data(
-        "users",
-        "sync/users"
-    )
+    # 2. PULL SINKRONISASI (VPS -> Lokal)
+    # --------------------------------------------
+    pull_and_sync_data("pasien", "sync/pull-pasien", "sync/acknowledge-pasien")
+    pull_and_sync_data("visit", "sync/pull-visit", "sync/acknowledge-visit")
+    pull_and_sync_data("users", "sync/pull-users", "sync/acknowledge-users")
     
     # delay worker 5 detik
     time.sleep(5)

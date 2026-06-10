@@ -52,6 +52,14 @@ Route::middleware(VerifySyncToken::class)->group(function () {
     Route::post('/sync/users', [SyncController::class, 'syncUsers']);
     Route::post('/sync/kirim-pasien', [SyncController::class, 'kirimPasien']);
     Route::post('/sync/kirim-visit',  [SyncController::class, 'kirimVisit']);
+
+    // PULL & ACKNOWLEDGE ROUTES (TWO-WAY SYNC)
+    Route::get('/sync/pull-pasien', [SyncController::class, 'getPendingPasien']);
+    Route::get('/sync/pull-visit', [SyncController::class, 'getPendingVisit']);
+    Route::get('/sync/pull-users', [SyncController::class, 'getPendingUsers']);
+    Route::post('/sync/acknowledge-pasien', [SyncController::class, 'acknowledgePasien']);
+    Route::post('/sync/acknowledge-visit', [SyncController::class, 'acknowledgeVisit']);
+    Route::post('/sync/acknowledge-users', [SyncController::class, 'acknowledgeUsers']);
 });
 
 
