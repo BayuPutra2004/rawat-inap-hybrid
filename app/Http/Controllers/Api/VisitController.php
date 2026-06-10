@@ -54,7 +54,6 @@ class VisitController extends Controller
                 'pasien_id' => 'required|exists:pasien,id',
                 'dokter_id' => 'required|exists:users,id',
                 'keluhan' => 'required',
-                'pemeriksaan_fisik' => 'sometimes|nullable|string',
                 'diagnosa' => 'required',
                 'tindakan' => 'required',
             ]);
@@ -71,7 +70,6 @@ class VisitController extends Controller
 
                 // DATA VISIT
                 'keluhan' => $request->keluhan,
-                'pemeriksaan_fisik' => $request->pemeriksaan_fisik,
                 'diagnosa' => $request->diagnosa,
                 'tindakan' => $request->tindakan,
             ]);

@@ -15,7 +15,6 @@ class Visit extends Model
         'pasien_uuid',
         'dokter_uuid',
         'keluhan',
-        'pemeriksaan_fisik',
         'diagnosa',
         'tindakan',
 
