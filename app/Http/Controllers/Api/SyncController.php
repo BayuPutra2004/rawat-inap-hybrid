@@ -402,7 +402,7 @@ class SyncController extends Controller
     {
         $data = \App\Models\User::where('status_sync', 'pending')
             ->where('source_server', 'vps')
-            ->get();
+            ->get()->makeVisible('password');
         return response()->json($data);
     }
 
@@ -462,7 +462,7 @@ class SyncController extends Controller
 
     public function getAllUsers()
     {
-        return response()->json(\App\Models\User::all());
+        return response()->json(\App\Models\User::all()->makeVisible('password'));
     }
 
     // ================== HELPER LOG ==================
