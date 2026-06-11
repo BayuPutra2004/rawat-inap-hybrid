@@ -1,296 +1,148 @@
 import pymysql
 import requests
 import time
+import os
 
-# KONFIGURASI DATABASE LOKAL
+# ----------------------------------------------------
+# 1. LOAD KONFIGURASI DARI .ENV LARAVEL
+# ----------------------------------------------------
+def load_env(filepath=".env"):
+    # Coba baca dari folder yang sama, atau folder parent
+    paths_to_try = [filepath, os.path.join(os.path.dirname(__file__), "..", filepath)]
+    for path in paths_to_try:
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, val = line.split("=", 1)
+                        os.environ[key.strip()] = val.strip().strip("'").strip('"')
+            break
+
+load_env()
+
+# ----------------------------------------------------
+# 2. SETUP VARIABEL & DATABASE DINAMIS
+# ----------------------------------------------------
+LOCAL_ROLE = os.environ.get("SERVER_ROLE", "lokal")
+TARGET_ROLE = "vps" if LOCAL_ROLE == "lokal" else "lokal"
+
+BASE_URL = os.environ.get("SYNC_URL", "http://127.0.0.1:8000/api")
+SYNC_TOKEN = os.environ.get("SYNC_SECRET_KEY", "SyncSecretToken2026Secure")
+
 db_config = {
-    "host": "127.0.0.1",
-    "user": "root",
-    "password": "",
-    "database": "rawat_inap"
+    "user": os.environ.get("DB_USERNAME", "root"),
+    "password": os.environ.get("DB_PASSWORD", ""),
+    "database": os.environ.get("DB_DATABASE", "rawat_inap"),
 }
 
-# MENYIMPAN ERROR TERAKHIR
+# Cek apakah environment pakai socket (seperti VPS) atau host biasa
+db_socket = os.environ.get("DB_SOCKET")
+if db_socket:
+    db_config["unix_socket"] = db_socket
+else:
+    db_config["host"] = os.environ.get("DB_HOST", "127.0.0.1")
+    db_port = os.environ.get("DB_PORT")
+    if db_port:
+        db_config["port"] = int(db_port)
+
 last_errors = {}
 
-# URL SERVER VPS / PUBLIK
-BASE_URL = "http://103.87.67.113:8001/api"
-
-# TOKEN PENGAMAN SINKRONISASI (Harus sama dengan SYNC_SECRET_KEY di .env Laravel)
-SYNC_TOKEN = "SyncSecretToken2026Secure"
-
-
-# FUNCTION SIMPAN LOG SINKRONISASI
-#----------------------------------------------------
-# Fungsi ini digunakan untuk menyimpan histori sync
-# ke tabel sync_log agar dapat dianalisis pada BAB 4
-# seperti:
-# - waktu sinkronisasi
-# - keberhasilan sync
-# - error sync
-# - monitoring hybrid network
-def save_sync_log(
-    cursor,
-    table_name,
-    action_type,
-    data_uuid,
-    source_server,
-    target_server,
-    sync_status,
-    duration_ms,
-    message
-):
+# ----------------------------------------------------
+# 3. FUNGSI LOG SINKRONISASI
+# ----------------------------------------------------
+def save_sync_log(cursor, table_name, action_type, data_uuid, source_server, target_server, sync_status, duration_ms, message):
     query = """
-    INSERT INTO sync_log (
-        table_name,
-        action_type,
-        data_uuid,
-        source_server,
-        target_server,
-        sync_status,
-        sync_duration_ms,
-        message,
-        created_at,
-        updated_at
-    )
-    VALUES (
-        %s,%s,%s,%s,%s,%s,%s,%s,
-        NOW(),NOW()
-    )
+    INSERT INTO sync_log (table_name, action_type, data_uuid, source_server, target_server, sync_status, sync_duration_ms, message, created_at, updated_at)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),NOW())
     """
-    
-    cursor.execute(query, (
-        table_name,
-        action_type,
-        data_uuid,
-        source_server,
-        target_server,
-        sync_status,
-        duration_ms,
-        message
+    cursor.execute(query, (table_name, action_type, data_uuid, source_server, target_server, sync_status, duration_ms, message))
 
-    ))
-
-# FUNCTION GENERIC SYNC DATA
-#-----------------------------------
-# Fungsi ini dibuat generic agar:
-# - tidak duplicate code
-# - lebih profesional
-# - mudah dikembangkan
-# - siap two-way synchronization
-#
-# Parameter:
-# table_name = nama tabel database
-# endpoint   = endpoint API tujuan
+# ----------------------------------------------------
+# 4. FUNGSI PUSH DATA (LOKAL -> TARGET)
+# ----------------------------------------------------
 def sync_data(table_name, endpoint):
-
-    # koneksi database
     db = pymysql.connect(**db_config)
-
     cursor = db.cursor(pymysql.cursors.DictCursor)
 
-    print(f"\n[SYNC {table_name.upper()}]")
-    print("CEK DATA PENDING...")
+    print(f"\n[PUSH {table_name.upper()}]")
+    print(f"CEK DATA PENDING DI {LOCAL_ROLE.upper()}...")
 
-    # AMBIL DATA YANG BELUM TERSINKRON
-    #------------------------------------------------
-    # source_server='lokal'
-    # penting untuk mencegah infinite loop
-    # saat nanti two-way sync aktif
-    query = f"""
-    SELECT * FROM {table_name}
-    WHERE status_sync='pending'
-    AND source_server='lokal'
-    """
-
+    query = f"SELECT * FROM {table_name} WHERE status_sync='pending' AND source_server='{LOCAL_ROLE}'"
     cursor.execute(query)
     hasil = cursor.fetchall()
 
-    # jika tidak ada data
     if not hasil:
-        print("TIDAK ADA DATA PENDING")
+        print(f"TIDAK ADA DATA PENDING DI {LOCAL_ROLE.upper()}")
         db.close()
         return
 
-    # UBAH SEMUA DATA MENJADI STRING
-    # agar JSON serializable
-    # terutama untuk datetime/date
     for item in hasil:
         for key, value in item.items():
             if value is not None:
                 item[key] = str(value)
     try:
-
-        # UPDATE STATUS MENJADI syncing
-        # menandakan data sedang diproses sync
         ids = [str(item['id']) for item in hasil]
-
-        update_syncing = f"""
-        UPDATE {table_name}
-        SET status_sync='syncing'
-        WHERE id IN ({','.join(ids)})
-        """
-
-        cursor.execute(update_syncing)
+        cursor.execute(f"UPDATE {table_name} SET status_sync='syncing' WHERE id IN ({','.join(ids)})")
         db.commit()
 
-        # HITUNG WAKTU SINKRONISASI
         start_time = time.time()
-
-        # KIRIM DATA KE VPS
         response = requests.post(
             f"{BASE_URL}/{endpoint}",
             json=hasil,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "X-Sync-Token": SYNC_TOKEN
-            },
-
-            # timeout agar worker tidak hang
+            headers={"Content-Type": "application/json", "Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
             timeout=10
         )
-
-        end_time = time.time()
-
-        # konversi ke milidetik
-        duration_ms = int((end_time - start_time) * 1000)
+        duration_ms = int((time.time() - start_time) * 1000)
 
         print("STATUS :", response.status_code)
         print("RESPON :", response.text)
         print(f"DURATION : {duration_ms} ms")
 
-        # CHECK RESPONSE API
-        if (
-            response.status_code == 200 and
-            response.json().get("success")
-        ):
-
-            # UPDATE STATUS MENJADI synced
-            update_synced = f"""
-            UPDATE {table_name}
-            SET
-                status_sync='synced',
-                synced_at=NOW()
-            WHERE id IN ({','.join(ids)})
-            """
-
-            cursor.execute(update_synced)
-            db.commit()
-
-            # SIMPAN LOG BERHASIL
+        if response.status_code == 200 and response.json().get("success"):
+            cursor.execute(f"UPDATE {table_name} SET status_sync='synced', synced_at=NOW() WHERE id IN ({','.join(ids)})")
             for item in hasil:
-                save_sync_log(
-                    cursor,
-                    table_name,
-                    item["action_type"],
-                    item["uuid"],
-                    "lokal",
-                    "vps",
-                    "success",
-                    duration_ms,
-                    f"Sync {table_name} berhasil"
-                )
-                
+                save_sync_log(cursor, table_name, item["action_type"], item["uuid"], LOCAL_ROLE, TARGET_ROLE, "success", duration_ms, f"Push {table_name} berhasil")
             db.commit()
-            print(f"SYNC {table_name.upper()} BERHASIL")
-            
-            # RESET ERROR JIKA SUDAH BERHASIL
+            print(f"PUSH {table_name.upper()} BERHASIL")
             last_errors[table_name] = None
-            
         else:
-            # JIKA RESPONSE GAGAL
             for item in hasil:
-
-                save_sync_log(
-                    cursor,
-                    table_name,
-                    item["action_type"],
-                    item["uuid"],
-                    "lokal",
-                    "vps",
-                    "failed",
-                    duration_ms,
-                    response.text
-                )
-
-            # kembalikan status menjadi pending
-            rollback_query = f"""
-            UPDATE {table_name}
-            SET status_sync='pending'
-            WHERE id IN ({','.join(ids)})
-            """
-
-            cursor.execute(rollback_query)
+                save_sync_log(cursor, table_name, item["action_type"], item["uuid"], LOCAL_ROLE, TARGET_ROLE, "failed", duration_ms, response.text)
+            cursor.execute(f"UPDATE {table_name} SET status_sync='pending' WHERE id IN ({','.join(ids)})")
             db.commit()
-            print(f"SYNC {table_name.upper()} GAGAL")
+            print(f"PUSH {table_name.upper()} GAGAL")
     
     except Exception as e:
         error_message = str(e)
+        clean_message = f"SERVER {TARGET_ROLE.upper()} OFFLINE / TIDAK TERHUBUNG" if "Failed to establish a new connection" in error_message else error_message
+        print(f"PUSH {table_name.upper()} GAGAL - ERROR:", clean_message)
 
-        # PESAN ERROR LEBIH RAPI
-        if "Failed to establish a new connection" in error_message:
-            clean_message = "SERVER VPS OFFLINE / TIDAK TERHUBUNG"
-        else:
-            clean_message = error_message
-        print(f"SYNC {table_name.upper()} GAGAL")
-        print("ERROR :", clean_message)
-
-        # CEK AGAR TIDAK SPAM LOG ERROR SAMA
         if last_errors.get(table_name) != clean_message:
-
-            # SIMPAN LOG SEKALI SAJA
             for item in hasil:
-                save_sync_log(
-                    cursor,
-                    table_name,
-                    item["action_type"],
-                    item["uuid"],
-                    "lokal",
-                    "vps",
-                    "failed",
-                    0,
-                    clean_message
-                )
-
+                save_sync_log(cursor, table_name, item["action_type"], item["uuid"], LOCAL_ROLE, TARGET_ROLE, "failed", 0, clean_message)
             db.commit()
-            
-            # SIMPAN ERROR TERAKHIR
             last_errors[table_name] = clean_message
 
-        # KEMBALIKAN STATUS KE pending
-        rollback_query = f"""
-        UPDATE {table_name}
-        SET status_sync='pending'
-        WHERE id IN ({','.join(ids)})
-        """
-
-        cursor.execute(rollback_query)
+        cursor.execute(f"UPDATE {table_name} SET status_sync='pending' WHERE id IN ({','.join(ids)})")
         db.commit()
     finally:
-
-
-        # tutup koneksi database
         db.close()
 
-# FUNCTION PULL & SYNC DATA DARI VPS KE LOKAL
-#----------------------------------------------------
+# ----------------------------------------------------
+# 5. FUNGSI PULL DATA (TARGET -> LOKAL)
+# ----------------------------------------------------
 def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
-    # Koneksi ke database lokal
     db = pymysql.connect(**db_config)
     cursor = db.cursor(pymysql.cursors.DictCursor)
 
     print(f"\n[PULL {table_name.upper()}]")
-    print("MENGAMBIL DATA DARI VPS...")
+    print(f"MENGAMBIL DATA DARI {TARGET_ROLE.upper()}...")
 
     try:
-        # Kirim request GET ke VPS untuk mengambil data pending
         response = requests.get(
             f"{BASE_URL}/{pull_endpoint}",
-            headers={
-                "Accept": "application/json",
-                "X-Sync-Token": SYNC_TOKEN
-            },
+            headers={"Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
             timeout=10
         )
 
@@ -300,198 +152,110 @@ def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
 
         hasil = response.json()
         if not hasil:
-            print("TIDAK ADA DATA PENDING DI VPS")
+            print(f"TIDAK ADA DATA PENDING DI {TARGET_ROLE.upper()}")
             return
 
-        print(f"MENERIMA {len(hasil)} DATA PENDING DARI VPS")
-
+        print(f"MENERIMA {len(hasil)} DATA PENDING DARI {TARGET_ROLE.upper()}")
         synced_uuids = []
         start_time = time.time()
 
-        # Tentukan kolom yang valid untuk masing-masing tabel
-        if table_name == 'pasien':
-            allowed_columns = [
-                'uuid', 'no_rm', 'nama', 'jenis_kelamin', 'tanggal_lahir',
-                'dokter_id', 'dokter_uuid', 'status', 'tanggal_keluar',
-                'catatan_keluar', 'is_active', 'status_sync', 'source_server',
-                'action_type', 'is_deleted', 'created_at', 'updated_at'
-            ]
-        elif table_name == 'visit':
-            allowed_columns = [
-                'uuid', 'pasien_id', 'dokter_id', 'pasien_uuid', 'dokter_uuid',
-                'keluhan', 'diagnosa', 'tindakan', 'status_sync', 'source_server',
-                'action_type', 'created_at', 'updated_at'
-            ]
-        elif table_name == 'users':
-            allowed_columns = [
-                'uuid', 'name', 'email', 'password', 'role', 'status_sync',
-                'source_server', 'action_type', 'created_at', 'updated_at'
-            ]
-        else:
-            allowed_columns = []
+        allowed_columns = {
+            'pasien': ['uuid', 'no_rm', 'nama', 'jenis_kelamin', 'tanggal_lahir', 'dokter_id', 'dokter_uuid', 'status', 'tanggal_keluar', 'catatan_keluar', 'is_active', 'status_sync', 'source_server', 'action_type', 'is_deleted', 'created_at', 'updated_at'],
+            'visit': ['uuid', 'pasien_id', 'dokter_id', 'pasien_uuid', 'dokter_uuid', 'keluhan', 'diagnosa', 'tindakan', 'status_sync', 'source_server', 'action_type', 'created_at', 'updated_at'],
+            'users': ['uuid', 'name', 'email', 'password', 'role', 'status_sync', 'source_server', 'action_type', 'created_at', 'updated_at']
+        }.get(table_name, [])
 
         for item in hasil:
             uuid_val = item.get('uuid')
-            if not uuid_val:
-                continue
+            if not uuid_val: continue
 
-            # Bersihkan dan sanitisasi nilai-nilai JSON
             for k, v in item.items():
-                if v == 'None' or v == 'null' or v == '' or v is None:
-                    item[k] = None
-                elif k in ['is_active', 'is_deleted']:
-                    if v is not None:
-                        item[k] = 1 if str(v).lower() in ['true', '1'] else 0
-                elif k in ['created_at', 'updated_at', 'synced_at']:
-                    if v is not None:
-                        # Konversi format datetime ISO ke standar MySQL YYYY-MM-DD HH:MM:SS
-                        val_str = str(v).replace('T', ' ')
-                        if '.' in val_str:
-                            val_str = val_str.split('.')[0]
-                        elif val_str.endswith('Z'):
-                            val_str = val_str[:-1]
-                        item[k] = val_str
-                elif k in ['tanggal_lahir', 'tanggal_keluar']:
-                    if v is not None:
-                        # Ambil tanggal saja (YYYY-MM-DD)
-                        item[k] = str(v).split('T')[0]
+                if v in ['None', 'null', '', None]: item[k] = None
+                elif k in ['is_active', 'is_deleted'] and v is not None: item[k] = 1 if str(v).lower() in ['true', '1'] else 0
+                elif k in ['created_at', 'updated_at', 'synced_at'] and v is not None: item[k] = str(v).replace('T', ' ').split('.')[0].rstrip('Z')
+                elif k in ['tanggal_lahir', 'tanggal_keluar'] and v is not None: item[k] = str(v).split('T')[0]
 
-            # Resolusi relasi foreign key ke ID lokal berdasarkan UUID
-            if table_name == 'pasien':
-                dokter_uuid = item.get('dokter_uuid')
-                if dokter_uuid:
-                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
+            if table_name in ['pasien', 'visit']:
+                d_uuid = item.get('dokter_uuid')
+                if d_uuid:
+                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (d_uuid,))
                     res = cursor.fetchone()
                     item['dokter_id'] = res['id'] if res else None
-                else:
-                    item['dokter_id'] = None
+                else: item['dokter_id'] = None
 
-            elif table_name == 'visit':
-                pasien_uuid = item.get('pasien_uuid')
-                if pasien_uuid:
-                    cursor.execute("SELECT id FROM pasien WHERE uuid = %s", (pasien_uuid,))
+            if table_name == 'visit':
+                p_uuid = item.get('pasien_uuid')
+                if p_uuid:
+                    cursor.execute("SELECT id FROM pasien WHERE uuid = %s", (p_uuid,))
                     res = cursor.fetchone()
                     item['pasien_id'] = res['id'] if res else None
-                else:
-                    item['pasien_id'] = None
+                else: item['pasien_id'] = None
 
-                dokter_uuid = item.get('dokter_uuid')
-                if dokter_uuid:
-                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
-                    res = cursor.fetchone()
-                    item['dokter_id'] = res['id'] if res else None
-                else:
-                    item['dokter_id'] = None
-
-            # Pastikan semua key valid ada di item (isi dengan None jika absen)
             for col in allowed_columns:
-                if col not in item:
-                    item[col] = None
+                if col not in item: item[col] = None
 
-            # Cek apakah data sudah ada di database lokal
             cursor.execute(f"SELECT * FROM {table_name} WHERE uuid = %s", (uuid_val,))
             existing = cursor.fetchone()
 
             if not existing:
-                # INSERT DATA BARU
                 item['status_sync'] = 'synced'
-                columns = allowed_columns + ['synced_at']
-                placeholders = [f"%({col})s" for col in allowed_columns] + ['NOW()']
-
-                insert_query = f"""
-                INSERT INTO {table_name} ({', '.join(columns)})
-                VALUES ({', '.join(placeholders)})
-                """
-                cursor.execute(insert_query, item)
+                placeholders = [f"%({c})s" for c in allowed_columns] + ['NOW()']
+                cursor.execute(f"INSERT INTO {table_name} ({', '.join(allowed_columns)}, synced_at) VALUES ({', '.join(placeholders)})", item)
                 print(f"INSERT LOKAL BERHASIL: {uuid_val}")
             else:
-                # UPDATE DATA JIKA DATA VPS LEBIH BARU
-                vps_updated_at = item.get('updated_at')
-                local_updated_at = existing.get('updated_at')
-
-                is_newer = False
-                if vps_updated_at:
-                    if not local_updated_at:
-                        is_newer = True
-                    else:
-                        is_newer = str(vps_updated_at) > str(local_updated_at)
+                target_updated = item.get('updated_at')
+                local_updated = existing.get('updated_at')
+                is_newer = str(target_updated) > str(local_updated) if target_updated and local_updated else bool(target_updated)
 
                 if is_newer:
                     item['status_sync'] = 'synced'
-                    update_parts = [f"{col} = %({col})s" for col in allowed_columns if col not in ['uuid', 'created_at']]
-                    update_parts.append("synced_at = NOW()")
-
-                    update_query = f"""
-                    UPDATE {table_name}
-                    SET {', '.join(update_parts)}
-                    WHERE uuid = %(uuid)s
-                    """
-                    cursor.execute(update_query, item)
+                    update_parts = [f"{c} = %({c})s" for c in allowed_columns if c not in ['uuid', 'created_at']] + ["synced_at = NOW()"]
+                    cursor.execute(f"UPDATE {table_name} SET {', '.join(update_parts)} WHERE uuid = %(uuid)s", item)
                     print(f"UPDATE LOKAL BERHASIL: {uuid_val}")
                 else:
-                    print(f"SKIP UPDATE (LOKAL LEBIH BARU/SAMA): {uuid_val}")
+                    print(f"SKIP UPDATE ({LOCAL_ROLE.upper()} LEBIH BARU/SAMA): {uuid_val}")
 
             synced_uuids.append(uuid_val)
 
         db.commit()
 
-        # Kirim konfirmasi Acknowledgment ke VPS
         if synced_uuids:
-            end_time = time.time()
-            duration_ms = int((end_time - start_time) * 1000)
-
+            duration_ms = int((time.time() - start_time) * 1000)
             ack_res = requests.post(
                 f"{BASE_URL}/{ack_endpoint}",
                 json={"uuids": synced_uuids},
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "X-Sync-Token": SYNC_TOKEN
-                },
+                headers={"Content-Type": "application/json", "Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
                 timeout=10
             )
 
             if ack_res.status_code == 200 and ack_res.json().get("success"):
-                print(f"ACK PULL {table_name.upper()} SUKSES DI VPS")
+                print(f"ACK PULL {table_name.upper()} SUKSES DI {TARGET_ROLE.upper()}")
                 for uuid_val in synced_uuids:
-                    save_sync_log(
-                        cursor,
-                        table_name,
-                        "pull_insert",
-                        uuid_val,
-                        "vps",
-                        "lokal",
-                        "success",
-                        duration_ms,
-                        f"Pull sync {table_name} berhasil"
-                    )
+                    save_sync_log(cursor, table_name, "pull_insert", uuid_val, TARGET_ROLE, LOCAL_ROLE, "success", duration_ms, f"Pull sync {table_name} berhasil")
                 db.commit()
             else:
-                print(f"ACK PULL {table_name.upper()} GAGAL DI VPS: {ack_res.text}")
+                print(f"ACK PULL {table_name.upper()} GAGAL DI {TARGET_ROLE.upper()}: {ack_res.text}")
 
     except Exception as e:
         print(f"PULL {table_name.upper()} ERROR:", str(e))
         db.rollback()
     finally:
         db.close()
-# FUNCTION RECOVERY / SELF-HEALING (VPS -> LOKAL)
-#----------------------------------------------------
+
+# ----------------------------------------------------
+# 6. FUNGSI DISASTER RECOVERY (TARGET -> LOKAL)
+# ----------------------------------------------------
 def recover_lost_data(table_name, endpoint):
-    # Koneksi ke database lokal
     db = pymysql.connect(**db_config)
     cursor = db.cursor(pymysql.cursors.DictCursor)
 
     print(f"\n[RECOVERY {table_name.upper()}]")
-    print("MENGAMBIL DATA RECOVERY DARI VPS...")
+    print(f"MENGAMBIL DATA RECOVERY DARI {TARGET_ROLE.upper()}...")
 
     try:
-        # Kirim request GET ke VPS untuk mengambil semua data
         response = requests.get(
             f"{BASE_URL}/{endpoint}",
-            headers={
-                "Accept": "application/json",
-                "X-Sync-Token": SYNC_TOKEN
-            },
+            headers={"Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
             timeout=15
         )
 
@@ -501,157 +265,80 @@ def recover_lost_data(table_name, endpoint):
 
         hasil = response.json()
         if not hasil:
-            print("TIDAK ADA DATA RECOVERY DI VPS")
+            print(f"TIDAK ADA DATA RECOVERY DI {TARGET_ROLE.upper()}")
             return
 
-        print(f"MENERIMA {len(hasil)} DATA RECOVERY DARI VPS")
+        print(f"MENERIMA {len(hasil)} DATA RECOVERY DARI {TARGET_ROLE.upper()}")
 
         recovered_count = 0
         updated_count = 0
         start_time = time.time()
 
-        # Tentukan kolom yang valid untuk masing-masing tabel
-        if table_name == 'pasien':
-            allowed_columns = [
-                'uuid', 'no_rm', 'nama', 'jenis_kelamin', 'tanggal_lahir',
-                'dokter_id', 'dokter_uuid', 'status', 'tanggal_keluar',
-                'catatan_keluar', 'is_active', 'status_sync', 'source_server',
-                'action_type', 'is_deleted', 'created_at', 'updated_at'
-            ]
-        elif table_name == 'visit':
-            allowed_columns = [
-                'uuid', 'pasien_id', 'dokter_id', 'pasien_uuid', 'dokter_uuid',
-                'keluhan', 'diagnosa', 'tindakan', 'status_sync', 'source_server',
-                'action_type', 'created_at', 'updated_at'
-            ]
-        elif table_name == 'users':
-            allowed_columns = [
-                'uuid', 'name', 'email', 'password', 'role', 'status_sync',
-                'source_server', 'action_type', 'created_at', 'updated_at'
-            ]
-        else:
-            allowed_columns = []
+        allowed_columns = {
+            'pasien': ['uuid', 'no_rm', 'nama', 'jenis_kelamin', 'tanggal_lahir', 'dokter_id', 'dokter_uuid', 'status', 'tanggal_keluar', 'catatan_keluar', 'is_active', 'status_sync', 'source_server', 'action_type', 'is_deleted', 'created_at', 'updated_at'],
+            'visit': ['uuid', 'pasien_id', 'dokter_id', 'pasien_uuid', 'dokter_uuid', 'keluhan', 'diagnosa', 'tindakan', 'status_sync', 'source_server', 'action_type', 'created_at', 'updated_at'],
+            'users': ['uuid', 'name', 'email', 'password', 'role', 'status_sync', 'source_server', 'action_type', 'created_at', 'updated_at']
+        }.get(table_name, [])
 
         for item in hasil:
             uuid_val = item.get('uuid')
-            if not uuid_val:
-                continue
+            if not uuid_val: continue
 
-            # Bersihkan dan sanitisasi nilai-nilai JSON
             for k, v in item.items():
-                if v == 'None' or v == 'null' or v == '' or v is None:
-                    item[k] = None
-                elif k in ['is_active', 'is_deleted']:
-                    if v is not None:
-                        item[k] = 1 if str(v).lower() in ['true', '1'] else 0
-                elif k in ['created_at', 'updated_at', 'synced_at']:
-                    if v is not None:
-                        val_str = str(v).replace('T', ' ')
-                        if '.' in val_str:
-                            val_str = val_str.split('.')[0]
-                        elif val_str.endswith('Z'):
-                            val_str = val_str[:-1]
-                        item[k] = val_str
-                elif k in ['tanggal_lahir', 'tanggal_keluar']:
-                    if v is not None:
-                        item[k] = str(v).split('T')[0]
+                if v in ['None', 'null', '', None]: item[k] = None
+                elif k in ['is_active', 'is_deleted'] and v is not None: item[k] = 1 if str(v).lower() in ['true', '1'] else 0
+                elif k in ['created_at', 'updated_at', 'synced_at'] and v is not None: item[k] = str(v).replace('T', ' ').split('.')[0].rstrip('Z')
+                elif k in ['tanggal_lahir', 'tanggal_keluar'] and v is not None: item[k] = str(v).split('T')[0]
 
-            # Resolusi relasi foreign key ke ID lokal berdasarkan UUID
-            if table_name == 'pasien':
-                dokter_uuid = item.get('dokter_uuid')
-                if dokter_uuid:
-                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
+            if table_name in ['pasien', 'visit']:
+                d_uuid = item.get('dokter_uuid')
+                if d_uuid:
+                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (d_uuid,))
                     res = cursor.fetchone()
                     item['dokter_id'] = res['id'] if res else None
-                else:
-                    item['dokter_id'] = None
+                else: item['dokter_id'] = None
 
-            elif table_name == 'visit':
-                pasien_uuid = item.get('pasien_uuid')
-                if pasien_uuid:
-                    cursor.execute("SELECT id FROM pasien WHERE uuid = %s", (pasien_uuid,))
+            if table_name == 'visit':
+                p_uuid = item.get('pasien_uuid')
+                if p_uuid:
+                    cursor.execute("SELECT id FROM pasien WHERE uuid = %s", (p_uuid,))
                     res = cursor.fetchone()
                     item['pasien_id'] = res['id'] if res else None
-                else:
-                    item['pasien_id'] = None
+                else: item['pasien_id'] = None
 
-                dokter_uuid = item.get('dokter_uuid')
-                if dokter_uuid:
-                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (dokter_uuid,))
-                    res = cursor.fetchone()
-                    item['dokter_id'] = res['id'] if res else None
-                else:
-                    item['dokter_id'] = None
-
-            # Pastikan semua key valid ada di item (isi dengan None jika absen)
             for col in allowed_columns:
-                if col not in item:
-                    item[col] = None
+                if col not in item: item[col] = None
 
-            # Cek apakah data sudah ada di database lokal
             cursor.execute(f"SELECT * FROM {table_name} WHERE uuid = %s", (uuid_val,))
             existing = cursor.fetchone()
 
             if not existing:
-                # INSERT DATA HILANG / BARU
                 item['status_sync'] = 'synced'
-                columns = allowed_columns + ['synced_at']
-                placeholders = [f"%({col})s" for col in allowed_columns] + ['NOW()']
-
-                insert_query = f"""
-                INSERT INTO {table_name} ({', '.join(columns)})
-                VALUES ({', '.join(placeholders)})
-                """
-                cursor.execute(insert_query, item)
+                placeholders = [f"%({c})s" for c in allowed_columns] + ['NOW()']
+                cursor.execute(f"INSERT INTO {table_name} ({', '.join(allowed_columns)}, synced_at) VALUES ({', '.join(placeholders)})", item)
                 print(f"PEMULIHAN INSERT BERHASIL: {uuid_val}")
                 recovered_count += 1
             else:
-                # UPDATE DATA JIKA DATA VPS LEBIH BARU
-                vps_updated_at = item.get('updated_at')
-                local_updated_at = existing.get('updated_at')
-
-                is_newer = False
-                if vps_updated_at:
-                    if not local_updated_at:
-                        is_newer = True
-                    else:
-                        is_newer = str(vps_updated_at) > str(local_updated_at)
+                target_updated = item.get('updated_at')
+                local_updated = existing.get('updated_at')
+                is_newer = str(target_updated) > str(local_updated) if target_updated and local_updated else bool(target_updated)
 
                 if is_newer:
                     item['status_sync'] = 'synced'
-                    update_parts = [f"{col} = %({col})s" for col in allowed_columns if col not in ['uuid', 'created_at']]
-                    update_parts.append("synced_at = NOW()")
-
-                    update_query = f"""
-                    UPDATE {table_name}
-                    SET {', '.join(update_parts)}
-                    WHERE uuid = %(uuid)s
-                    """
-                    cursor.execute(update_query, item)
+                    update_parts = [f"{c} = %({c})s" for c in allowed_columns if c not in ['uuid', 'created_at']] + ["synced_at = NOW()"]
+                    cursor.execute(f"UPDATE {table_name} SET {', '.join(update_parts)} WHERE uuid = %(uuid)s", item)
                     print(f"PEMULIHAN UPDATE BERHASIL: {uuid_val}")
                     updated_count += 1
 
         db.commit()
-        end_time = time.time()
-        duration_ms = int((end_time - start_time) * 1000)
+        duration_ms = int((time.time() - start_time) * 1000)
 
-        # Simpan log recovery berhasil jika ada data yang dipulihkan/diupdate
         if recovered_count > 0 or updated_count > 0:
             print(f"RECOVERY {table_name.upper()} SELESAI: {recovered_count} DATA DIPULIHKAN, {updated_count} DATA DIUPDATE")
-            save_sync_log(
-                cursor,
-                table_name,
-                "recovery",
-                "-",
-                "vps",
-                "lokal",
-                "success",
-                duration_ms,
-                f"Recovery selesai. {recovered_count} dipulihkan, {updated_count} diupdate."
-            )
+            save_sync_log(cursor, table_name, "recovery", "-", TARGET_ROLE, LOCAL_ROLE, "success", duration_ms, f"Recovery selesai. {recovered_count} dipulihkan, {updated_count} diupdate.")
             db.commit()
         else:
-            print(f"RECOVERY {table_name.upper()} SELESAI: TIDAK ADA DATA LOKAL YANG HILANG/TERTANDINGI")
+            print(f"RECOVERY {table_name.upper()} SELESAI: TIDAK ADA DATA {LOCAL_ROLE.upper()} YANG HILANG/TERTANDINGI")
 
     except Exception as e:
         print(f"RECOVERY {table_name.upper()} ERROR:", str(e))
@@ -660,33 +347,29 @@ def recover_lost_data(table_name, endpoint):
         db.close()
 
 
-# MAIN WORKER LOOP
-#----------------------
-# Worker berjalan terus menerus
-# setiap 5 detik untuk:
-# - PUSH: cek data pending lokal -> kirim ke VPS
-# - PULL: cek data pending VPS -> tarik ke lokal
-# - monitoring hybrid network
-
-print("\n=== MENJALANKAN DISASTER RECOVERY (SELF-HEALING) ===")
-recover_lost_data("users", "sync/all-users")
-recover_lost_data("pasien", "sync/all-pasien")
-recover_lost_data("visit", "sync/all-visit")
-print("=== DISASTER RECOVERY SELESAI. MASUK KE LOOP SINKRONISASI ===\n")
-
-while True:
-
-    # 1. PUSH SINKRONISASI (Lokal -> VPS)
-    # --------------------------------------------
-    sync_data("pasien", "sync/pasien")
-    sync_data("visit", "sync/visit")
-    sync_data("users", "sync/users")
-
-    # 2. PULL SINKRONISASI (VPS -> Lokal)
-    # --------------------------------------------
-    pull_and_sync_data("pasien", "sync/pull-pasien", "sync/acknowledge-pasien")
-    pull_and_sync_data("visit", "sync/pull-visit", "sync/acknowledge-visit")
-    pull_and_sync_data("users", "sync/pull-users", "sync/acknowledge-users")
+# ----------------------------------------------------
+# 7. MAIN WORKER LOOP
+# ----------------------------------------------------
+if __name__ == "__main__":
+    print(f"\n=== WORKER BERJALAN SEBAGAI: {LOCAL_ROLE.upper()} ===")
+    print(f"=== MENGHUBUNGI TARGET: {TARGET_ROLE.upper()} ({BASE_URL}) ===\n")
     
-    # delay worker 5 detik
-    time.sleep(5)
+    print("=== MENJALANKAN DISASTER RECOVERY (SELF-HEALING) ===")
+    recover_lost_data("users", "sync/all-users")
+    recover_lost_data("pasien", "sync/all-pasien")
+    recover_lost_data("visit", "sync/all-visit")
+    print("=== DISASTER RECOVERY SELESAI. MASUK KE LOOP SINKRONISASI ===\n")
+
+    while True:
+        # PUSH
+        sync_data("pasien", "sync/pasien")
+        sync_data("visit", "sync/visit")
+        sync_data("users", "sync/users")
+
+        # PULL
+        pull_and_sync_data("pasien", "sync/pull-pasien", "sync/acknowledge-pasien")
+        pull_and_sync_data("visit", "sync/pull-visit", "sync/acknowledge-visit")
+        pull_and_sync_data("users", "sync/pull-users", "sync/acknowledge-users")
+        
+        # Jeda
+        time.sleep(5)
