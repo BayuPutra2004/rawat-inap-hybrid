@@ -30,6 +30,9 @@ TARGET_ROLE = "vps" if LOCAL_ROLE == "lokal" else "lokal"
 BASE_URL = os.environ.get("SYNC_URL", "http://127.0.0.1:8000/api")
 SYNC_TOKEN = os.environ.get("SYNC_SECRET_KEY", "SyncSecretToken2026Secure")
 
+SLAVE_URL = os.environ.get("SLAVE_URL", "")
+SLAVE_TOKEN = os.environ.get("SLAVE_SYNC_TOKEN", "")
+
 db_config = {
     "user": os.environ.get("DB_USERNAME", "root"),
     "password": os.environ.get("DB_PASSWORD", ""),
@@ -348,6 +351,115 @@ def recover_lost_data(table_name, endpoint):
 
 
 # ----------------------------------------------------
+# 6b. FUNGSI DISASTER RECOVERY DARI SERVER SLAVE
+# ----------------------------------------------------
+def recover_from_slave(table_name, endpoint):
+    if not SLAVE_URL:
+        print(f"\n[SLAVE RECOVERY {table_name.upper()}] SLAVE_URL tidak dikonfigurasi, skip.")
+        return
+
+    db = pymysql.connect(**db_config)
+    cursor = db.cursor(pymysql.cursors.DictCursor)
+
+    print(f"\n[SLAVE RECOVERY {table_name.upper()}]")
+    print(f"MENGAMBIL DATA RECOVERY DARI SERVER SLAVE ({SLAVE_URL})...")
+
+    try:
+        response = requests.get(
+            f"{SLAVE_URL}/{endpoint}",
+            headers={"Accept": "application/json", "X-Sync-Token": SLAVE_TOKEN},
+            timeout=15
+        )
+
+        if response.status_code != 200:
+            print(f"SLAVE RECOVERY {table_name.upper()} GAGAL - Status: {response.status_code}")
+            return
+
+        hasil = response.json()
+        if not hasil:
+            print(f"TIDAK ADA DATA RECOVERY DI SERVER SLAVE")
+            return
+
+        print(f"MENERIMA {len(hasil)} DATA RECOVERY DARI SERVER SLAVE")
+
+        recovered_count = 0
+        updated_count = 0
+        start_time = time.time()
+
+        allowed_columns = {
+            'pasien': ['uuid', 'no_rm', 'nama', 'jenis_kelamin', 'tanggal_lahir', 'dokter_id', 'dokter_uuid', 'status', 'tanggal_keluar', 'catatan_keluar', 'is_active', 'status_sync', 'source_server', 'action_type', 'is_deleted', 'created_at', 'updated_at'],
+            'visit': ['uuid', 'pasien_id', 'dokter_id', 'pasien_uuid', 'dokter_uuid', 'keluhan', 'diagnosa', 'tindakan', 'status_sync', 'source_server', 'action_type', 'created_at', 'updated_at'],
+            'users': ['uuid', 'name', 'email', 'password', 'role', 'status_sync', 'source_server', 'action_type', 'created_at', 'updated_at']
+        }.get(table_name, [])
+
+        for item in hasil:
+            uuid_val = item.get('uuid')
+            if not uuid_val: continue
+
+            for k, v in item.items():
+                if v in ['None', 'null', '', None]: item[k] = None
+                elif k in ['is_active', 'is_deleted'] and v is not None: item[k] = 1 if str(v).lower() in ['true', '1'] else 0
+                elif k in ['created_at', 'updated_at', 'synced_at'] and v is not None: item[k] = str(v).replace('T', ' ').split('.')[0].rstrip('Z')
+                elif k in ['tanggal_lahir', 'tanggal_keluar'] and v is not None: item[k] = str(v).split('T')[0]
+
+            if table_name in ['pasien', 'visit']:
+                d_uuid = item.get('dokter_uuid')
+                if d_uuid:
+                    cursor.execute("SELECT id FROM users WHERE uuid = %s", (d_uuid,))
+                    res = cursor.fetchone()
+                    item['dokter_id'] = res['id'] if res else None
+                else: item['dokter_id'] = None
+
+            if table_name == 'visit':
+                p_uuid = item.get('pasien_uuid')
+                if p_uuid:
+                    cursor.execute("SELECT id FROM pasien WHERE uuid = %s", (p_uuid,))
+                    res = cursor.fetchone()
+                    item['pasien_id'] = res['id'] if res else None
+                else: item['pasien_id'] = None
+
+            for col in allowed_columns:
+                if col not in item: item[col] = None
+
+            cursor.execute(f"SELECT * FROM {table_name} WHERE uuid = %s", (uuid_val,))
+            existing = cursor.fetchone()
+
+            if not existing:
+                item['status_sync'] = 'synced'
+                placeholders = [f"%({c})s" for c in allowed_columns] + ['NOW()']
+                cursor.execute(f"INSERT INTO {table_name} ({', '.join(allowed_columns)}, synced_at) VALUES ({', '.join(placeholders)})", item)
+                print(f"PEMULIHAN SLAVE INSERT BERHASIL: {uuid_val}")
+                recovered_count += 1
+            else:
+                target_updated = item.get('updated_at')
+                local_updated = existing.get('updated_at')
+                is_newer = str(target_updated) > str(local_updated) if target_updated and local_updated else bool(target_updated)
+
+                if is_newer:
+                    item['status_sync'] = 'synced'
+                    update_parts = [f"{c} = %({c})s" for c in allowed_columns if c not in ['uuid', 'created_at']] + ["synced_at = NOW()"]
+                    cursor.execute(f"UPDATE {table_name} SET {', '.join(update_parts)} WHERE uuid = %(uuid)s", item)
+                    print(f"PEMULIHAN SLAVE UPDATE BERHASIL: {uuid_val}")
+                    updated_count += 1
+
+        db.commit()
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        if recovered_count > 0 or updated_count > 0:
+            print(f"SLAVE RECOVERY {table_name.upper()} SELESAI: {recovered_count} DATA DIPULIHKAN, {updated_count} DATA DIUPDATE")
+            save_sync_log(cursor, table_name, "recovery_slave", "-", "slave", LOCAL_ROLE, "success", duration_ms, f"Slave recovery selesai. {recovered_count} dipulihkan, {updated_count} diupdate.")
+            db.commit()
+        else:
+            print(f"SLAVE RECOVERY {table_name.upper()} SELESAI: TIDAK ADA DATA SLAVE YANG BARU ATAU HILANG")
+
+    except Exception as e:
+        print(f"SLAVE RECOVERY {table_name.upper()} ERROR:", str(e))
+        db.rollback()
+    finally:
+        db.close()
+
+
+# ----------------------------------------------------
 # 7. MAIN WORKER LOOP
 # ----------------------------------------------------
 if __name__ == "__main__":
@@ -357,10 +469,15 @@ if __name__ == "__main__":
     # -------------------------------------------------------
     # DISASTER RECOVERY saat pertama kali worker dijalankan
     # -------------------------------------------------------
-    print("=== MENJALANKAN DISASTER RECOVERY (SELF-HEALING) ===")
+    print("=== MENJALANKAN DISASTER RECOVERY TAHAP 1 (DARI LOKAL/MASTER) ===")
     recover_lost_data("users", "sync/all-users")
     recover_lost_data("pasien", "sync/all-pasien")
     recover_lost_data("visit", "sync/all-visit")
+    
+    print("\n=== MENJALANKAN DISASTER RECOVERY TAHAP 2 (DARI SERVER SLAVE) ===")
+    recover_from_slave("users", "sync/all-users")
+    recover_from_slave("pasien", "sync/all-pasien")
+    recover_from_slave("visit", "sync/all-visit")
     print("=== DISASTER RECOVERY SELESAI. MASUK KE LOOP SINKRONISASI ===\n")
 
     # Interval recovery berkala: setiap 60 siklus x 5 detik = ±5 menit
@@ -380,16 +497,18 @@ if __name__ == "__main__":
 
         # -------------------------------------------------------
         # PERIODIC SELF-RECOVERY: setiap ±5 menit
-        # Jika sewaktu-waktu data di server ini hilang,
-        # sistem otomatis mengambil kembali dari target (slave/master)
-        # tanpa perlu restart worker
         # -------------------------------------------------------
         loop_counter += 1
         if loop_counter >= RECOVERY_INTERVAL:
-            print("\n=== [PERIODIC SELF-RECOVERY] CEK DATA YANG HILANG ===")
+            print("\n=== [PERIODIC SELF-RECOVERY] CEK DATA YANG HILANG DARI TARGET ===")
             recover_lost_data("users",  "sync/all-users")
             recover_lost_data("pasien", "sync/all-pasien")
             recover_lost_data("visit",  "sync/all-visit")
+            
+            print("\n=== [PERIODIC SELF-RECOVERY] CEK DATA YANG HILANG DARI SLAVE ===")
+            recover_from_slave("users",  "sync/all-users")
+            recover_from_slave("pasien", "sync/all-pasien")
+            recover_from_slave("visit",  "recovery/all-visit") # Jika di slave routing-nya diatur recovery/all-visit
             print("=== [PERIODIC SELF-RECOVERY] SELESAI ===\n")
             loop_counter = 0  # reset counter
 
