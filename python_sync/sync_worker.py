@@ -353,23 +353,45 @@ def recover_lost_data(table_name, endpoint):
 if __name__ == "__main__":
     print(f"\n=== WORKER BERJALAN SEBAGAI: {LOCAL_ROLE.upper()} ===")
     print(f"=== MENGHUBUNGI TARGET: {TARGET_ROLE.upper()} ({BASE_URL}) ===\n")
-    
+
+    # -------------------------------------------------------
+    # DISASTER RECOVERY saat pertama kali worker dijalankan
+    # -------------------------------------------------------
     print("=== MENJALANKAN DISASTER RECOVERY (SELF-HEALING) ===")
     recover_lost_data("users", "sync/all-users")
     recover_lost_data("pasien", "sync/all-pasien")
     recover_lost_data("visit", "sync/all-visit")
     print("=== DISASTER RECOVERY SELESAI. MASUK KE LOOP SINKRONISASI ===\n")
 
+    # Interval recovery berkala: setiap 60 siklus x 5 detik = ±5 menit
+    RECOVERY_INTERVAL = 60
+    loop_counter = 0
+
     while True:
-        # PUSH
+        # PUSH: kirim data pending dari lokal ke target
         sync_data("pasien", "sync/pasien")
         sync_data("visit", "sync/visit")
         sync_data("users", "sync/users")
 
-        # PULL
+        # PULL: ambil data pending dari target ke lokal
         pull_and_sync_data("pasien", "sync/pull-pasien", "sync/acknowledge-pasien")
         pull_and_sync_data("visit", "sync/pull-visit", "sync/acknowledge-visit")
         pull_and_sync_data("users", "sync/pull-users", "sync/acknowledge-users")
-        
-        # Jeda
+
+        # -------------------------------------------------------
+        # PERIODIC SELF-RECOVERY: setiap ±5 menit
+        # Jika sewaktu-waktu data di server ini hilang,
+        # sistem otomatis mengambil kembali dari target (slave/master)
+        # tanpa perlu restart worker
+        # -------------------------------------------------------
+        loop_counter += 1
+        if loop_counter >= RECOVERY_INTERVAL:
+            print("\n=== [PERIODIC SELF-RECOVERY] CEK DATA YANG HILANG ===")
+            recover_lost_data("users",  "sync/all-users")
+            recover_lost_data("pasien", "sync/all-pasien")
+            recover_lost_data("visit",  "sync/all-visit")
+            print("=== [PERIODIC SELF-RECOVERY] SELESAI ===\n")
+            loop_counter = 0  # reset counter
+
+        # Jeda 5 detik setiap siklus
         time.sleep(5)
