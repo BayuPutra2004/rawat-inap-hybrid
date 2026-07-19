@@ -93,7 +93,12 @@ def sync_data(table_name, endpoint):
         response = requests.post(
             f"{BASE_URL}/{endpoint}",
             json=hasil,
-            headers={"Content-Type": "application/json", "Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
+            headers={
+                "Content-Type": "application/json", 
+                "Accept": "application/json", 
+                "X-Sync-Token": SYNC_TOKEN,
+                "ngrok-skip-browser-warning": "true"
+            },
             timeout=10
         )
         duration_ms = int((time.time() - start_time) * 1000)
@@ -110,8 +115,12 @@ def sync_data(table_name, endpoint):
             print(f"PUSH {table_name.upper()} BERHASIL")
             last_errors[table_name] = None
         else:
-            for item in hasil:
-                save_sync_log(cursor, table_name, item["action_type"], item["uuid"], LOCAL_ROLE, TARGET_ROLE, "failed", duration_ms, response.text)
+            clean_message = f"HTTP {response.status_code}: Gagal mengirim data"
+            if last_errors.get(table_name) != clean_message:
+                for item in hasil:
+                    save_sync_log(cursor, table_name, item["action_type"], item["uuid"], LOCAL_ROLE, TARGET_ROLE, "failed", duration_ms, response.text[:250])
+                db.commit()
+                last_errors[table_name] = clean_message
             cursor.execute(f"UPDATE {table_name} SET status_sync='pending' WHERE id IN ({','.join(ids)})")
             db.commit()
             print(f"PUSH {table_name.upper()} GAGAL")
@@ -145,7 +154,11 @@ def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
     try:
         response = requests.get(
             f"{BASE_URL}/{pull_endpoint}",
-            headers={"Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
+            headers={
+                "Accept": "application/json", 
+                "X-Sync-Token": SYNC_TOKEN,
+                "ngrok-skip-browser-warning": "true"
+            },
             timeout=10
         )
 
@@ -227,7 +240,12 @@ def pull_and_sync_data(table_name, pull_endpoint, ack_endpoint):
             ack_res = requests.post(
                 f"{BASE_URL}/{ack_endpoint}",
                 json={"uuids": synced_uuids},
-                headers={"Content-Type": "application/json", "Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
+                headers={
+                    "Content-Type": "application/json", 
+                    "Accept": "application/json", 
+                    "X-Sync-Token": SYNC_TOKEN,
+                    "ngrok-skip-browser-warning": "true"
+                },
                 timeout=10
             )
 
@@ -258,7 +276,11 @@ def recover_lost_data(table_name, endpoint):
     try:
         response = requests.get(
             f"{BASE_URL}/{endpoint}",
-            headers={"Accept": "application/json", "X-Sync-Token": SYNC_TOKEN},
+            headers={
+                "Accept": "application/json", 
+                "X-Sync-Token": SYNC_TOKEN,
+                "ngrok-skip-browser-warning": "true"
+            },
             timeout=15
         )
 
