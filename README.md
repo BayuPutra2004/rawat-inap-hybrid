@@ -45,14 +45,14 @@ Fasilitas layanan kesehatan di berbagai daerah sering kali mengalami kendala kon
 ## Alur Kerja Sinkronisasi (Architecture Flow)
 
 ```mermaid
-graph TD
-    subgraph Local Node (Rumah Sakit)
-        LocalApp[Web / Mobile Client] --> LocalDB[(Local MySQL)]
-        Worker[Python Sync Worker] -->|Membaca Perubahan Data| LocalDB
+flowchart TD
+    subgraph LocalNode ["Local Node (Rumah Sakit)"]
+        LocalApp["Web / Mobile Client"] --> LocalDB[("Local MySQL")]
+        Worker["Python Sync Worker"] -->|Membaca Perubahan Data| LocalDB
     end
 
-    subgraph Cloud Node (Server Pusat)
-        CloudAPI[Laravel API Server] --> CloudDB[(Cloud MySQL)]
+    subgraph CloudNode ["Cloud Node (Server Pusat)"]
+        CloudAPI["Laravel API Server"] --> CloudDB[("Cloud MySQL")]
     end
 
     Worker -->|Push Data & VerifySyncToken| CloudAPI
